@@ -152,6 +152,7 @@ glfs_h_stat (struct glfs *fs, struct glfs_object *object, struct stat *stat)
 
 	/* fop/op */
 	ret = syncop_stat (subvol, &loc, &iatt);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (!ret && stat) {
@@ -217,6 +218,59 @@ out:
 }
 
 int
+glfs_h_getxattrs (struct glfs *fs, struct glfs_object *object, const char *name,
+		  void *value, size_t size)
+{
+	int		 ret = 0;
+	xlator_t        *subvol = NULL;
+	inode_t         *inode = NULL;
+	loc_t            loc = {0, };
+	dict_t		*xattr = NULL;
+
+	/* validate in args */
+	if ((fs == NULL) || (object == NULL)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	__glfs_entry_fs (fs);
+
+	/* get the active volume */
+	subvol = glfs_active_subvol (fs);
+	if (!subvol) {
+		ret = -1;
+		errno = EIO;
+		goto out;
+	}
+
+	/* get/refresh the in arg objects inode in correlation to the xlator */
+	inode = glfs_resolve_inode (fs, subvol, object);
+	if (!inode) {
+		errno = ESTALE;
+		goto out;
+	}
+
+	/* populate loc */
+	GLFS_LOC_FILL_INODE (inode, loc, out);
+
+	ret = syncop_getxattr (subvol, &loc, &xattr, name);
+        DECODE_SYNCOP_ERR (ret);
+
+	if (ret)
+		goto out;
+
+	ret = glfs_getxattr_process (value, size, xattr, name);
+
+out:
+	if (inode)
+		inode_unref (inode);
+
+	glfs_subvol_done (fs, subvol);
+
+	return ret;
+}
+
+int
 glfs_h_setattrs (struct glfs *fs, struct glfs_object *object, struct stat *stat,
 		 int valid)
 {
@@ -258,6 +312,114 @@ glfs_h_setattrs (struct glfs *fs, struct glfs_object *object, struct stat *stat,
 
 	/* fop/op */
 	ret = syncop_setattr (subvol, &loc, &iatt, glvalid, 0, 0);
+        DECODE_SYNCOP_ERR (ret);
+out:
+	loc_wipe (&loc);
+
+	if (inode)
+		inode_unref (inode);
+
+	glfs_subvol_done (fs, subvol);
+
+	return ret;
+}
+
+int
+glfs_h_setxattrs (struct glfs *fs, struct glfs_object *object, const char *name,
+		 const void *value, size_t size, int flags)
+{
+	int              ret = -1;
+	xlator_t        *subvol = NULL;
+	inode_t         *inode = NULL;
+	loc_t            loc = {0, };
+	dict_t          *xattr = NULL;
+
+	/* validate in args */
+	if ((fs == NULL) || (object == NULL) || (stat == NULL)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	__glfs_entry_fs (fs);
+
+	/* get the active volume */
+	subvol = glfs_active_subvol (fs);
+	if (!subvol) {
+		ret = -1;
+		errno = EIO;
+		goto out;
+	}
+
+	/* get/refresh the in arg objects inode in correlation to the xlator */
+	inode = glfs_resolve_inode (fs, subvol, object);
+	if (!inode) {
+		errno = ESTALE;
+		goto out;
+	}
+
+	xattr = dict_for_key_value (name, value, size);
+	if (!xattr) {
+		ret = -1;
+		errno = ENOMEM;
+		goto out;
+	}
+
+	/* populate loc */
+	GLFS_LOC_FILL_INODE (inode, loc, out);
+
+	/* fop/op */
+	ret = syncop_setxattr (subvol, &loc, xattr, flags);
+        DECODE_SYNCOP_ERR (ret);
+
+out:
+	loc_wipe (&loc);
+
+	if (inode)
+		inode_unref (inode);
+
+	glfs_subvol_done (fs, subvol);
+
+	return ret;
+}
+
+int
+glfs_h_removexattrs (struct glfs *fs, struct glfs_object *object, const char *name)
+{
+	int              ret = -1;
+	xlator_t        *subvol = NULL;
+	inode_t         *inode = NULL;
+	loc_t            loc = {0, };
+
+	/* validate in args */
+	if ((fs == NULL) || (object == NULL) || (stat == NULL)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	__glfs_entry_fs (fs);
+
+	/* get the active volume */
+	subvol = glfs_active_subvol (fs);
+	if (!subvol) {
+		ret = -1;
+		errno = EIO;
+		goto out;
+	}
+
+	/* get/refresh the in arg objects inode in correlation to the xlator */
+	inode = glfs_resolve_inode (fs, subvol, object);
+	if (!inode) {
+		errno = ESTALE;
+		goto out;
+	}
+
+	/* populate loc */
+	GLFS_LOC_FILL_INODE (inode, loc, out);
+
+	/* fop/op */
+	ret = syncop_removexattr (subvol, &loc, name, 0);
+        DECODE_SYNCOP_ERR (ret);
+
 out:
 	loc_wipe (&loc);
 
@@ -331,6 +493,7 @@ glfs_h_open (struct glfs *fs, struct glfs_object *object, int flags)
 
 	/* fop/op */
 	ret = syncop_open (subvol, &loc, flags, glfd->fd);
+        DECODE_SYNCOP_ERR (ret);
 
 out:
 	loc_wipe (&loc);
@@ -420,6 +583,7 @@ glfs_h_creat (struct glfs *fs, struct glfs_object *parent, const char *path,
 	/* fop/op */
 	ret = syncop_create (subvol, &loc, flags, mode, glfd->fd,
 			     xattr_req, &iatt);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (ret == 0) {
@@ -518,6 +682,7 @@ glfs_h_mkdir (struct glfs *fs, struct glfs_object *parent, const char *path,
 
 	/* fop/op */
 	ret = syncop_mkdir (subvol, &loc, mode, xattr_req, &iatt);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if ( ret == 0 )  {
@@ -606,6 +771,7 @@ glfs_h_mknod (struct glfs *fs, struct glfs_object *parent, const char *path,
 
 	/* fop/op */
 	ret = syncop_mknod (subvol, &loc, mode, dev, xattr_req, &iatt);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (ret == 0) {
@@ -676,11 +842,13 @@ glfs_h_unlink (struct glfs *fs, struct glfs_object *parent, const char *path)
 
 	if (!IA_ISDIR(loc.inode->ia_type)) {
 		ret = syncop_unlink (subvol, &loc);
+                DECODE_SYNCOP_ERR (ret);
 		if (ret != 0) {
 			goto out;
 		}
 	} else {
-		ret = syncop_rmdir (subvol, &loc);
+		ret = syncop_rmdir (subvol, &loc, 0);
+                DECODE_SYNCOP_ERR (ret);
 		if (ret != 0) {
 			goto out;
 		}
@@ -755,6 +923,7 @@ glfs_h_opendir (struct glfs *fs, struct glfs_object *object)
 
 	/* fop/op */
 	ret = syncop_opendir (subvol, &loc, glfd->fd);
+        DECODE_SYNCOP_ERR (ret);
 
 out:
 	loc_wipe (&loc);
@@ -846,6 +1015,7 @@ glfs_h_create_from_handle (struct glfs *fs, unsigned char *handle, int len,
 	}
 
 	ret = syncop_lookup (subvol, &loc, 0, &iatt, 0, 0);
+        DECODE_SYNCOP_ERR (ret);
 	if (ret) {
 		gf_log (subvol->name, GF_LOG_WARNING,
 			"inode refresh of %s failed: %s",
@@ -934,6 +1104,7 @@ glfs_h_truncate (struct glfs *fs, struct glfs_object *object, off_t offset)
 
 	/* fop/op */
 	ret = syncop_truncate (subvol, &loc, (off_t)offset);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (ret == 0)
@@ -1006,6 +1177,7 @@ glfs_h_symlink (struct glfs *fs, struct glfs_object *parent, const char *name,
 
 	/* fop/op */
 	ret = syncop_symlink (subvol, &loc, data, xattr_req, &iatt);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (ret == 0) {
@@ -1081,6 +1253,7 @@ glfs_h_readlink (struct glfs *fs, struct glfs_object *object, char *buf,
 
 	/* fop/op */
 	ret = syncop_readlink (subvol, &loc, &linkval, bufsiz);
+        DECODE_SYNCOP_ERR (ret);
 
 	/* populate out args */
 	if (ret > 0)
@@ -1166,6 +1339,7 @@ glfs_h_link (struct glfs *fs, struct glfs_object *linksrc,
 
 	/* fop/op */
 	ret = syncop_link (subvol, &oldloc, &newloc);
+        DECODE_SYNCOP_ERR (ret);
 
 	if (ret == 0)
 		/* TODO: No iatt to pass as there has been no lookup */
@@ -1248,7 +1422,7 @@ glfs_h_rename (struct glfs *fs, struct glfs_object *olddir, const char *oldname,
 			 * or both must be non-dirs. Else, fail.
 			 */
 			ret = -1;
-			errno = EISDIR;
+			errno = EEXIST;
 			goto out;
 		}
 	}
@@ -1256,6 +1430,7 @@ glfs_h_rename (struct glfs *fs, struct glfs_object *olddir, const char *oldname,
 	/* TODO: check if new or old is a prefix of the other, and fail EINVAL */
 
 	ret = syncop_rename (subvol, &oldloc, &newloc);
+        DECODE_SYNCOP_ERR (ret);
 
 	if (ret == 0)
 		inode_rename (oldloc.parent->table, oldloc.parent, oldloc.name,

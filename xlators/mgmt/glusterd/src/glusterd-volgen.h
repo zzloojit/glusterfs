@@ -22,6 +22,7 @@
 #define VKEY_DIAG_CNT_FOP_HITS    "diagnostics.count-fop-hits"
 #define VKEY_DIAG_LAT_MEASUREMENT "diagnostics.latency-measurement"
 #define VKEY_FEATURES_LIMIT_USAGE "features.limit-usage"
+#define VKEY_FEATURES_SOFT_LIMIT  "features.soft-limit"
 #define VKEY_MARKER_XTIME         GEOREP".indexing"
 #define VKEY_MARKER_XTIME_FORCE   GEOREP".ignore-pid-check"
 #define VKEY_CHANGELOG            "changelog.changelog"
@@ -121,9 +122,14 @@ void glusterd_get_shd_filepath (char *filename);
 
 int glusterd_create_nfs_volfile ();
 int glusterd_create_shd_volfile ();
+int glusterd_create_quotad_volfile ();
 
 int glusterd_delete_volfile (glusterd_volinfo_t *volinfo,
                              glusterd_brickinfo_t *brickinfo);
+int
+glusterd_delete_snap_volfile (glusterd_volinfo_t *volinfo,
+                              glusterd_volinfo_t *snap_volinfo,
+                              glusterd_brickinfo_t *brickinfo);
 
 int glusterd_volinfo_get (glusterd_volinfo_t *volinfo, char *key, char **value);
 int glusterd_volinfo_get_boolean (glusterd_volinfo_t *volinfo, char *key);
@@ -137,8 +143,15 @@ glusterd_check_voloption_flags (char *key, int32_t flags);
 gf_boolean_t
 glusterd_is_valid_volfpath (char *volname, char *brick);
 int generate_brick_volfiles (glusterd_volinfo_t *volinfo);
+int generate_snap_brick_volfiles (glusterd_volinfo_t *volinfo,
+                                  glusterd_volinfo_t *snap_volinfo);
 int generate_client_volfiles (glusterd_volinfo_t *volinfo,
                               glusterd_client_type_t client_type);
+int
+generate_snap_client_volfiles (glusterd_volinfo_t *actual_volinfo,
+                               glusterd_volinfo_t *snap_volinfo,
+                               glusterd_client_type_t client_type,
+                               gf_boolean_t vol_restore);
 int glusterd_get_volopt_content (dict_t *dict, gf_boolean_t xml_out);
 char*
 glusterd_get_trans_type_rb (gf_transport_type ttype);
@@ -159,4 +172,7 @@ gd_is_xlator_option (char *key);
 gf_boolean_t
 gd_is_boolean_option (char *key);
 
+int gd_restore_snap_volume (dict_t *rsp_dict,
+                            glusterd_volinfo_t *orig_vol,
+                            glusterd_volinfo_t *snap_vol);
 #endif

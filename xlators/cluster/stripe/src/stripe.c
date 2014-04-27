@@ -1053,6 +1053,9 @@ stripe_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
                 op_errno = ENOMEM;
                 goto err;
         }
+
+        frame->local = local;
+
         local->op_ret = -1;
         loc_copy (&local->loc, oldloc);
         loc_copy (&local->loc2, newloc);
@@ -1065,8 +1068,6 @@ stripe_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
 			goto err;
 		local->fctx = fctx;
 	}
-
-        frame->local = local;
 
         STACK_WIND (frame, stripe_first_rename_cbk, trav->xlator,
                     trav->xlator->fops->rename, oldloc, newloc, NULL);
@@ -2879,15 +2880,15 @@ stripe_fsync (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags, dict
                 goto err;
         }
 
+        frame->local = local;
+
 	inode_ctx_get(fd->inode, this, (uint64_t *) &fctx);
 	if (!fctx) {
 		op_errno = EINVAL;
 		goto err;
 	}
 	local->fctx = fctx;
-
         local->op_ret = -1;
-        frame->local = local;
         local->call_count = priv->child_count;
 
         while (trav) {
@@ -4117,7 +4118,9 @@ stripe_zerofill_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
         call_frame_t   *prev       = NULL;
         call_frame_t   *mframe     = NULL;
 
-        if (!this || !frame || !frame->local || !cookie) {
+        GF_ASSERT (frame);
+
+        if (!this || !frame->local || !cookie) {
                 gf_log ("stripe", GF_LOG_DEBUG, "possible NULL deref");
                 goto out;
         }
@@ -4195,30 +4198,6 @@ stripe_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
         inode_ctx_get (fd->inode, this, &tmp_fctx);
         if (!tmp_fctx) {
                 op_errno = EINVAL;
-                goto err;
-        }
-        fctx = (stripe_fd_ctx_t *)(long)tmp_fctx;
-        stripe_size = fctx->stripe_size;
-
-        STRIPE_VALIDATE_FCTX (fctx, err);
-
-        remaining_size = len;
-
-        local = mem_get0 (this->local_pool);
-        if (!local) {
-                op_errno = ENOMEM;
-                goto err;
-        }
-        fctx = (stripe_fd_ctx_t *)(long)tmp_fctx;
-        stripe_size = fctx->stripe_size;
-
-        STRIPE_VALIDATE_FCTX (fctx, err);
-
-        remaining_size = len;
-
-        local = mem_get0 (this->local_pool);
-        if (!local) {
-                op_errno = ENOMEM;
                 goto err;
         }
         fctx = (stripe_fd_ctx_t *)(long)tmp_fctx;
@@ -4480,7 +4459,7 @@ stripe_is_bd (dict_t *this, char *key, data_t *value, void *data)
         return 0;
 }
 
-inline gf_boolean_t
+static inline gf_boolean_t
 stripe_setxattr_is_bd (dict_t *dict)
 {
         gf_boolean_t is_bd = _gf_false;
@@ -4649,7 +4628,7 @@ out:
         return ret;
 }
 
-inline gf_boolean_t
+static inline gf_boolean_t
 stripe_fsetxattr_is_special (dict_t *dict)
 {
         gf_boolean_t is_spl = _gf_false;
@@ -4907,7 +4886,7 @@ unlock:
 
                 if (!local_entry)
                         break;
-                if (!IA_ISREG (local_entry->d_stat.ia_type)) {
+                if (!IA_ISREG (local_entry->d_stat.ia_type) || !local_entry->inode) {
                         LOCK (&frame->lock);
                         {
                                 local->wind_count--;
@@ -5101,7 +5080,7 @@ reconfigure (xlator_t *this, dict_t *options)
                                 goto unlock;
                         }
 
-                        if (gf_string2bytesize (opt->default_value, &priv->block_size)){
+                        if (gf_string2bytesize_uint64 (opt->default_value, &priv->block_size)){
                                 gf_log (this->name, GF_LOG_ERROR,
                                         "Unable to set default block-size ");
                                 ret = -1;
@@ -5208,7 +5187,7 @@ init (xlator_t *this)
                         ret = -1;
                         goto unlock;
                 }
-                if (gf_string2bytesize (opt->default_value, &priv->block_size)){
+                if (gf_string2bytesize_uint64 (opt->default_value, &priv->block_size)){
                         gf_log (this->name, GF_LOG_ERROR,
                                 "Unable to set default block-size ");
                         ret = -1;
@@ -5546,9 +5525,7 @@ stripe_getxattr (call_frame_t *frame, xlator_t *this,
                 return 0;
         }
 
-        if (name &&
-            ((strncmp (name, GF_XATTR_PATHINFO_KEY,
-                       strlen (GF_XATTR_PATHINFO_KEY)) == 0))) {
+        if (name && (XATTR_IS_PATHINFO (name))) {
                 if (IA_ISREG (loc->inode->ia_type)) {
                         ret = inode_ctx_get (loc->inode, this,
                                              (uint64_t *) &local->fctx);
@@ -5624,7 +5601,7 @@ err:
         return 0;
 }
 
-inline gf_boolean_t
+static inline gf_boolean_t
 stripe_is_special_xattr (const char *name)
 {
         gf_boolean_t    is_spl = _gf_false;
@@ -5635,8 +5612,7 @@ stripe_is_special_xattr (const char *name)
 
         if (!strncmp (name, GF_XATTR_LOCKINFO_KEY,
                       strlen (GF_XATTR_LOCKINFO_KEY))
-            || !strncmp (name, GF_XATTR_PATHINFO_KEY,
-                         strlen (GF_XATTR_PATHINFO_KEY)))
+            || XATTR_IS_PATHINFO (name))
                 is_spl = _gf_true;
 out:
         return is_spl;

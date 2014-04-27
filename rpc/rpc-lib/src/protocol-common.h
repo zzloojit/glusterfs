@@ -82,6 +82,13 @@ enum gf_pmap_procnum {
         GF_PMAP_MAXVALUE,
 };
 
+enum gf_aggregator_procnum {
+        GF_AGGREGATOR_NULL = 0,
+        GF_AGGREGATOR_LOOKUP,
+        GF_AGGREGATOR_GETLIMIT,
+        GF_AGGREGATOR_MAXVALUE,
+};
+
 enum gf_pmap_port_type {
         GF_PMAP_PORT_FREE = 0,
         GF_PMAP_PORT_FOREIGN,
@@ -100,7 +107,8 @@ enum gf_probe_resp {
         GF_PROBE_SAME_UUID,
         GF_PROBE_UNKNOWN_PEER,
         GF_PROBE_ADD_FAILED,
-        GF_PROBE_QUORUM_NOT_MET
+        GF_PROBE_QUORUM_NOT_MET,
+        GF_PROBE_MISSED_SNAP_CONFLICT,
 };
 
 enum gf_deprobe_resp {
@@ -160,6 +168,7 @@ enum gluster_cli_procnum {
         GLUSTER_CLI_UUID_GET,
         GLUSTER_CLI_COPY_FILE,
         GLUSTER_CLI_SYS_EXEC,
+        GLUSTER_CLI_SNAP,
         GLUSTER_CLI_MAXVALUE,
 };
 
@@ -191,6 +200,7 @@ enum glusterd_brick_procnum {
         GLUSTERD_BRICK_XLATOR_DEFRAG,
         GLUSTERD_NODE_PROFILE,
         GLUSTERD_NODE_STATUS,
+        GLUSTERD_VOLUME_BARRIER_OP,
         GLUSTERD_BRICK_MAXVALUE,
 };
 
@@ -214,6 +224,34 @@ typedef enum {
         GF_AFR_OP_STATISTICS_HEAL_COUNT_PER_REPLICA,
 } gf_xl_afr_op_t ;
 
+struct gf_gsync_detailed_status_ {
+        char node[NAME_MAX];
+        char master[NAME_MAX];
+        char brick[NAME_MAX];
+        char slave_node[NAME_MAX];
+        char worker_status[NAME_MAX];
+        char checkpoint_status[NAME_MAX];
+        char crawl_status[NAME_MAX];
+        char files_syncd[NAME_MAX];
+        char files_remaining[NAME_MAX];
+        char bytes_remaining[NAME_MAX];
+        char purges_remaining[NAME_MAX];
+        char total_files_skipped[NAME_MAX];
+};
+
+enum glusterd_mgmt_v3_procnum {
+        GLUSTERD_MGMT_V3_NULL,    /* 0 */
+        GLUSTERD_MGMT_V3_LOCK,
+        GLUSTERD_MGMT_V3_PRE_VALIDATE,
+        GLUSTERD_MGMT_V3_BRICK_OP,
+        GLUSTERD_MGMT_V3_COMMIT,
+        GLUSTERD_MGMT_V3_POST_VALIDATE,
+        GLUSTERD_MGMT_V3_UNLOCK,
+        GLUSTERD_MGMT_V3_MAXVALUE,
+};
+
+typedef struct gf_gsync_detailed_status_ gf_gsync_status_t;
+
 #define GLUSTER_HNDSK_PROGRAM    14398633 /* Completely random */
 #define GLUSTER_HNDSK_VERSION    2   /* 0.0.2 */
 
@@ -227,6 +265,10 @@ typedef enum {
 #define GLUSTER_FOP_VERSION   330 /* 3.3.0 */
 #define GLUSTER_FOP_PROCCNT   GFS3_OP_MAXVALUE
 
+/* Aggregator */
+#define GLUSTER_AGGREGATOR_PROGRAM 29852134 /* Completely random */
+#define GLUSTER_AGGREGATOR_VERSION 1
+
 /* Second version */
 #define GD_MGMT_PROGRAM          1238433 /* Completely random */
 #define GD_MGMT_VERSION          2   /* 0.0.2 */
@@ -239,6 +281,9 @@ typedef enum {
 
 #define GD_BRICK_PROGRAM         4867634 /*Completely random*/
 #define GD_BRICK_VERSION         2
+
+/* Third version */
+#define GD_MGMT_V3_VERSION       3
 
 /* OP-VERSION handshake */
 #define GD_MGMT_HNDSK_PROGRAM    1239873 /* Completely random */

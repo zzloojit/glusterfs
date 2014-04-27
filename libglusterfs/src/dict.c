@@ -801,6 +801,8 @@ data_from_dynstr (char *value)
 
         data_t *data = get_new_data ();
 
+        if (!data)
+                return NULL;
         data->len = strlen (value) + 1;
         data->data = value;
 
@@ -817,6 +819,8 @@ data_from_dynmstr (char *value)
 
         data_t *data = get_new_data ();
 
+        if (!data)
+                return NULL;
         data->len = strlen (value) + 1;
         data->data = value;
         data->is_stdalloc = 1;
@@ -1037,7 +1041,7 @@ data_to_uint8 (data_t *data)
 	errno = 0;
 	value = strtol (str, NULL, 0);
 
-	if ((UCHAR_MAX - value) < 0) {
+	if ((UCHAR_MAX - (uint8_t)value) < 0) {
 		errno = ERANGE;
 		gf_log_callingfn ("dict", GF_LOG_WARNING,
 				  "data conversion overflow detected (%s)",
@@ -1086,6 +1090,20 @@ dict_null_foreach_fn (dict_t *d, char *k,
 }
 
 int
+dict_remove_foreach_fn (dict_t *d, char *k,
+                        data_t *v, void *_tmp)
+{
+        if (!d || !k) {
+                gf_log ("glusterfs", GF_LOG_WARNING, "%s is NULL",
+                        d?"key":"dictionary");
+                return -1;
+        }
+
+        dict_del (d, k);
+        return 0;
+}
+
+int
 dict_foreach (dict_t *dict,
               int (*fn)(dict_t *this,
                         char *key,
@@ -1107,8 +1125,8 @@ dict_foreach (dict_t *dict,
         while (pairs) {
                 next = pairs->next;
                 ret = fn (dict, pairs->key, pairs->value, data);
-                if (ret == -1)
-                        return -1;
+                if (ret < 0)
+                        return ret;
                 pairs = next;
         }
 
@@ -2049,6 +2067,23 @@ err:
 }
 
 int
+dict_set_dynstr_with_alloc (dict_t *this, char *key, const char *str)
+{
+        char *alloc_str = NULL;
+        int   ret       = -1;
+
+        alloc_str = gf_strdup (str);
+        if (!alloc_str)
+                return -1;
+
+        ret = dict_set_dynstr (this, key, alloc_str);
+        if (ret)
+                GF_FREE (alloc_str);
+
+        return ret;
+}
+
+int
 dict_set_dynstr (dict_t *this, char *key, char *str)
 {
         data_t * data = NULL;
@@ -2122,7 +2157,7 @@ dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
         data_t * data = NULL;
         int      ret  = 0;
 
-        if (!ptr || (size < 0)) {
+        if (!ptr || (size > ULONG_MAX)) {
                 ret = -EINVAL;
                 goto err;
         }
@@ -2150,7 +2185,7 @@ dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size)
         data_t * data = NULL;
         int      ret  = 0;
 
-        if (!ptr || (size < 0)) {
+        if (!ptr || (size > ULONG_MAX)) {
                 ret = -EINVAL;
                 goto err;
         }

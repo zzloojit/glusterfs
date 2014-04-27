@@ -31,6 +31,7 @@
 #include "protocol-common.h"
 #include "glusterfs3.h"
 #include "portmap-xdr.h"
+#include "xdr-common.h"
 #include "xdr-generic.h"
 
 #include "syncop.h"
@@ -207,6 +208,8 @@ glusterfs_oldvolfile_update (struct glfs *fs, char *volfile, ssize_t size)
 {
 	int ret = -1;
 
+        pthread_mutex_lock (&fs->mutex);
+
 	fs->oldvollen = size;
 	if (!fs->oldvolfile) {
 		fs->oldvolfile = GF_CALLOC (1, size+1, glfs_mt_volfile_t);
@@ -222,6 +225,8 @@ glusterfs_oldvolfile_update (struct glfs *fs, char *volfile, ssize_t size)
 		ret = 0;
 	}
 
+        pthread_mutex_unlock (&fs->mutex);
+
 	return ret;
 }
 
@@ -236,11 +241,19 @@ mgmt_getspec_cbk (struct rpc_req *req, struct iovec *iov, int count,
 	int			 ret   = 0;
 	ssize_t			 size = 0;
 	FILE			*tmpfp = NULL;
-	int                      need_retry = 0;
+	int			 need_retry = 0;
 	struct glfs		*fs = NULL;
 
 	frame = myframe;
 	ctx = frame->this->ctx;
+
+	if (!ctx) {
+		gf_log (frame->this->name, GF_LOG_ERROR, "NULL context");
+		errno = EINVAL;
+		ret = -1;
+		goto out;
+	}
+
 	fs = ((xlator_t *)ctx->master)->private;
 
 	if (-1 == req->rpc_status) {
@@ -260,7 +273,7 @@ mgmt_getspec_cbk (struct rpc_req *req, struct iovec *iov, int count,
 		gf_log (frame->this->name, GF_LOG_ERROR,
 			"failed to get the 'volume file' from server");
 		ret = -1;
-                errno = rsp.op_errno;
+		errno = rsp.op_errno;
 		goto out;
 	}
 
@@ -296,7 +309,7 @@ mgmt_getspec_cbk (struct rpc_req *req, struct iovec *iov, int count,
 	*/
 
 	ret = glusterfs_volfile_reconfigure (fs->oldvollen, tmpfp, fs->ctx,
-                                             fs->oldvolfile);
+					     fs->oldvolfile);
 	if (ret == 0) {
 		gf_log ("glusterfsd-mgmt", GF_LOG_DEBUG,
 			"No need to re-load volfile, reconfigure done");
@@ -323,13 +336,13 @@ out:
 	if (rsp.spec)
 		free (rsp.spec);
 
-        // Stop if server is running at an unsupported op-version
-        if (ENOTSUP == ret) {
-                gf_log ("mgmt", GF_LOG_ERROR, "Server is operating at an "
-                        "op-version which is not supported");
-                errno = ENOTSUP;
-                glfs_init_done (fs, -1);
-        }
+	// Stop if server is running at an unsupported op-version
+	if (ENOTSUP == ret) {
+		gf_log ("mgmt", GF_LOG_ERROR, "Server is operating at an "
+			"op-version which is not supported");
+		errno = ENOTSUP;
+		glfs_init_done (fs, -1);
+	}
 
 	if (ret && ctx && !ctx->active) {
 		/* Do it only for the first time */
@@ -339,10 +352,10 @@ out:
 			"failed to fetch volume file (key:%s)",
 			ctx->cmd_args.volfile_id);
 		if (!need_retry) {
-                        if (!errno)
-                                errno = EINVAL;
+			if (!errno)
+				errno = EINVAL;
 			glfs_init_done (fs, -1);
-                }
+		}
 	}
 
 	if (tmpfp)
@@ -413,43 +426,96 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 		 void *data)
 {
 	xlator_t	*this = NULL;
-	cmd_args_t	*cmd_args = NULL;
 	glusterfs_ctx_t *ctx = NULL;
+        server_cmdline_t *server = NULL;
+        rpc_transport_t  *rpc_trans = NULL;
 	struct glfs	 *fs = NULL;
 	int		 ret = 0;
 
 	this = mydata;
+        rpc_trans = rpc->conn.trans;
+
 	ctx = this->ctx;
+	if (!ctx)
+		goto out;
+
 	fs = ((xlator_t *)ctx->master)->private;
-	cmd_args = &ctx->cmd_args;
 
 	switch (event) {
 	case RPC_CLNT_DISCONNECT:
 		if (!ctx->active) {
-			cmd_args->max_connect_attempts--;
-			gf_log ("glfs-mgmt", GF_LOG_ERROR,
-				"failed to connect with remote-host: %s",
-				strerror (errno));
-			gf_log ("glfs-mgmt", GF_LOG_INFO,
-				"%d connect attempts left",
-				cmd_args->max_connect_attempts);
-			if (0 >= cmd_args->max_connect_attempts) {
+                        gf_log ("glfs-mgmt", GF_LOG_ERROR,
+                                "failed to connect with remote-host: %s (%s)",
+                                ctx->cmd_args.volfile_server,
+                                strerror (errno));
+                        server = ctx->cmd_args.curr_server;
+                        if (server->list.next == &ctx->cmd_args.volfile_servers) {
                                 errno = ENOTCONN;
-				glfs_init_done (fs, -1);
+                                gf_log("glfs-mgmt", GF_LOG_INFO,
+                                       "Exhausted all volfile servers");
+                                glfs_init_done (fs, -1);
+                                break;
                         }
-		}
-		break;
+                        server = list_entry (server->list.next, typeof(*server),
+                                             list);
+                        ctx->cmd_args.curr_server = server;
+                        ctx->cmd_args.volfile_server_port = server->port;
+                        ctx->cmd_args.volfile_server = server->volfile_server;
+                        ctx->cmd_args.volfile_server_transport = server->transport;
+
+                        ret = dict_set_int32 (rpc_trans->options,
+                                              "remote-port",
+                                              server->port);
+                        if (ret != 0) {
+                                gf_log ("glfs-mgmt", GF_LOG_ERROR,
+                                        "failed to set remote-port: %d",
+                                        server->port);
+                                errno = ENOTCONN;
+                                glfs_init_done (fs, -1);
+                                break;
+                        }
+
+                        ret = dict_set_str (rpc_trans->options,
+                                            "remote-host",
+                                            server->volfile_server);
+                        if (ret != 0) {
+                                gf_log ("glfs-mgmt", GF_LOG_ERROR,
+                                        "failed to set remote-host: %s",
+                                        server->volfile_server);
+                                errno = ENOTCONN;
+                                glfs_init_done (fs, -1);
+                                break;
+                        }
+
+                        ret = dict_set_str (rpc_trans->options,
+                                            "transport-type",
+                                            server->transport);
+                        if (ret != 0) {
+                                gf_log ("glfs-mgmt", GF_LOG_ERROR,
+                                        "failed to set transport-type: %s",
+                                        server->transport);
+                                errno = ENOTCONN;
+                                glfs_init_done (fs, -1);
+                                break;
+                        }
+                        gf_log ("glfs-mgmt", GF_LOG_INFO,
+                                "connecting to next volfile server %s"
+                                " at port %d with transport: %s",
+                                server->volfile_server, server->port,
+                                server->transport);
+                }
+                break;
 	case RPC_CLNT_CONNECT:
 		rpc_clnt_set_connected (&((struct rpc_clnt*)ctx->mgmt)->conn);
 
 		ret = glfs_volfile_fetch (fs);
-		if (ret && ctx && (ctx->active == NULL)) {
+		if (ret && (ctx->active == NULL)) {
 			/* Do it only for the first time */
 			/* Exit the process.. there are some wrong options */
 			gf_log ("glfs-mgmt", GF_LOG_ERROR,
 				"failed to fetch volume file (key:%s)",
 				ctx->cmd_args.volfile_id);
-                        errno = EINVAL;
+			errno = EINVAL;
 			glfs_init_done (fs, -1);
 		}
 
@@ -457,7 +523,7 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 	default:
 		break;
 	}
-
+out:
 	return 0;
 }
 
@@ -540,4 +606,3 @@ glfs_mgmt_init (struct glfs *fs)
 out:
 	return ret;
 }
-

@@ -32,11 +32,14 @@
 
 #include "bd.h"
 #include "bd-aio.h"
+#include "bd-mem-types.h"
 #include "defaults.h"
 #include "glusterfs3-xdr.h"
 #include "run.h"
 #include "protocol-common.h"
 #include "checksum.h"
+#include "syscall.h"
+#include "lvm-defaults.h"
 
 /*
  * Call back function for setxattr and removexattr.
@@ -213,7 +216,7 @@ bd_forget (xlator_t *this, inode_t *inode)
         ret = bd_inode_ctx_get (inode, this, &bdatt);
         if (!ret) {
                 inode_ctx_del (inode, this, &ctx);
-                FREE (bdatt);
+                GF_FREE (bdatt);
         }
         return 0;
 }
@@ -236,7 +239,7 @@ bd_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret,
                                      entry->d_stat.ia_gfid, &type, &size)) {
                         entry->d_stat.ia_size = size;
                         entry->d_stat.ia_blocks = size / 512;
-                        FREE (type);
+                        GF_FREE (type);
                 }
         }
 
@@ -653,7 +656,7 @@ bd_open (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
                 goto posix;
 
         uuid_utoa_r (fd->inode->gfid, gfid);
-        asprintf (&devpath, "/dev/%s/%s", priv->vg, gfid);
+        gf_asprintf (&devpath, "/dev/%s/%s", priv->vg, gfid);
         BD_VALIDATE_MEM_ALLOC (devpath, ret, out);
 
         _fd = open (devpath, flags | O_LARGEFILE, 0);
@@ -688,7 +691,7 @@ posix:
 out:
         BD_STACK_UNWIND (open, frame, -1, ret, fd, NULL);
 
-        FREE (devpath);
+        GF_FREE (devpath);
         if (ret) {
                 close (_fd);
                 GF_FREE (bd_fd);
@@ -718,9 +721,8 @@ bd_do_fsync (int fd, int datasync)
 {
         int   op_errno = 0;
 
-#ifdef HAVE_FDATASYNC
         if (datasync) {
-                if (fdatasync (fd)) {
+                if (sys_fdatasync (fd)) {
                         op_errno = errno;
                         gf_log (THIS->name, GF_LOG_ERROR,
                                 "fdatasync on fd=%d failed: %s",
@@ -728,9 +730,9 @@ bd_do_fsync (int fd, int datasync)
                 }
 
         } else
-#endif
+
         {
-                if (fsync (fd)) {
+                if (sys_fsync (fd)) {
                         op_errno = errno;
                         gf_log (THIS->name, GF_LOG_ERROR,
                                 "fsync on fd=%d failed: %s",
@@ -1015,6 +1017,13 @@ bd_setx_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
+        if (!strcmp (type, BD_THIN) && !(priv->caps & BD_CAPS_THIN)) {
+                gf_log (this->name, GF_LOG_WARNING, "THIN lv not supported by "
+                        "this volume");
+                op_errno = EOPNOTSUPP;
+                goto out;
+        }
+
         s_size = strtok_r (NULL, ":", &p);
 
         /* If size not specified get default size */
@@ -1102,7 +1111,7 @@ out:
         if (local->fd)
                 BD_STACK_UNWIND (fsetxattr, frame, op_ret, op_errno, NULL);
         else
-                BD_STACK_UNWIND (setxattr, frame, op_errno, op_errno, NULL);
+                BD_STACK_UNWIND (setxattr, frame, op_ret, op_errno, NULL);
 
         return 0;
 }
@@ -1206,7 +1215,7 @@ bd_offload_dest_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        local->bdatt = CALLOC (1, sizeof (bd_attr_t));
+        local->bdatt = GF_CALLOC (1, sizeof (bd_attr_t), gf_bd_attr);
         BD_VALIDATE_MEM_ALLOC (local->bdatt, op_errno, out);
 
         STACK_WIND (frame, bd_offload_getx_cbk, FIRST_CHILD(this),
@@ -1296,7 +1305,7 @@ bd_offload (call_frame_t *frame, xlator_t *this, loc_t *loc,
         local->dict = dict_new ();
         BD_VALIDATE_MEM_ALLOC (local->dict, op_errno, out);
 
-        local->dloc = CALLOC (1, sizeof (loc_t));
+        local->dloc = GF_CALLOC (1, sizeof (loc_t), gf_bd_loc_t);
         BD_VALIDATE_MEM_ALLOC (local->dloc, op_errno, out);
 
         strncpy (param, local->data->data, local->data->len);
@@ -1916,7 +1925,7 @@ bd_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret,
 
         memcpy (postbuf, &bdatt->iatt, sizeof (struct iatt));
 out:
-        FREE (valid);
+        GF_FREE (valid);
         BD_STACK_UNWIND (setattr, frame, op_ret, op_errno, prebuf,
                          postbuf, xdata);
         return 0;
@@ -1941,7 +1950,7 @@ bd_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc, struct iatt *stbuf,
         local = bd_local_init (frame, this);
         BD_VALIDATE_MEM_ALLOC (local, op_errno, out);
 
-        ck_valid = CALLOC (1, sizeof (valid));
+        ck_valid = GF_CALLOC (1, sizeof (valid), gf_bd_int32_t);
         BD_VALIDATE_MEM_ALLOC (ck_valid, op_errno, out);
 
         local->inode = inode_ref (loc->inode);
@@ -2195,6 +2204,36 @@ out:
         return 0;
 }
 
+static int
+bd_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+            off_t len, dict_t *xdata)
+{
+        int32_t ret             =  0;
+        struct  iatt statpre    = {0,};
+        struct  iatt statpost   = {0,};
+        bd_attr_t *bdatt = NULL;
+
+        /* iatt already cached */
+        if (bd_inode_ctx_get (fd->inode, this, &bdatt) < 0) {
+                STACK_WIND (frame, default_zerofill_cbk, FIRST_CHILD (this),
+                            FIRST_CHILD (this)->fops->zerofill,
+                            fd, offset, len, xdata);
+                return 0;
+        }
+
+        ret = bd_do_zerofill(frame, this, fd, offset, len,
+                             &statpre, &statpost);
+        if (ret)
+                goto err;
+
+        STACK_UNWIND_STRICT(zerofill, frame, 0, 0, &statpre, &statpost, NULL);
+        return 0;
+
+err:
+        STACK_UNWIND_STRICT(zerofill, frame, -1, ret, NULL, NULL, NULL);
+        return 0;
+}
+
 /**
  * notify - when parent sends PARENT_UP, send CHILD_UP event from here
  */
@@ -2231,6 +2270,7 @@ mem_acct_init (xlator_t *this)
         if (ret != 0)
                 gf_log (this->name, GF_LOG_ERROR, "Memory accounting init"
                        "failed");
+
         return ret;
 }
 
@@ -2324,15 +2364,20 @@ init (xlator_t *this)
                 }
         }
 
-        _private->caps |= BD_CAPS_OFFLOAD_COPY | BD_CAPS_OFFLOAD_SNAPSHOT;
+        _private->caps |= BD_CAPS_OFFLOAD_COPY | BD_CAPS_OFFLOAD_SNAPSHOT |
+                BD_CAPS_OFFLOAD_ZERO;
 
         return 0;
 error:
-        GF_FREE (_private->vg);
-        if (_private->handle)
-                lvm_quit (_private->handle);
+        if (_private) {
+                GF_FREE (_private->vg);
+                if (_private->handle)
+                        lvm_quit (_private->handle);
+                GF_FREE (_private);
+        }
+
         mem_pool_destroy (this->local_pool);
-        GF_FREE (_private);
+
         return -1;
 }
 
@@ -2380,6 +2425,7 @@ struct xlator_fops fops = {
         .flush       = bd_flush,
         .setattr     = bd_setattr,
         .discard     = bd_discard,
+        .zerofill    = bd_zerofill,
 };
 
 struct xlator_cbks cbks = {

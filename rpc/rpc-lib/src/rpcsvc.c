@@ -29,6 +29,7 @@
 #include "rpc-common-xdr.h"
 #include "syncop.h"
 #include "rpc-drc.h"
+#include "protocol-common.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -58,6 +59,9 @@ rpcsvc_get_listener (rpcsvc_t *svc, uint16_t port, rpc_transport_t *trans);
 int
 rpcsvc_notify (rpc_transport_t *trans, void *mydata,
                rpc_transport_event_t event, void *data, ...);
+
+static int
+match_subnet_v4 (const char *addrtok, const char *ipaddr);
 
 rpcsvc_notify_wrapper_t *
 rpcsvc_notify_wrapper_alloc (void)
@@ -129,32 +133,67 @@ rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
                 return NULL;
 }
 
+gf_boolean_t
+rpcsvc_can_outstanding_req_be_ignored (rpcsvc_request_t *req)
+{
+        /*
+         * If outstanding_rpc_limit is reached because of blocked locks and
+         * throttling is attempted then no unlock requests will be received. So
+         * the outstanding request count will never change i.e. it will always
+         * be equal to the limit. This also leads to ping timer expiry on
+         * client.
+         */
+
+        /*
+         * This is a hack and a necessity until grantedlock == fop completion.
+         * Ideally if we get a blocking lock request which cannot be granted
+         * right now, we should unwind the fop saying “request registered, will
+         * notify you when granted”, which is very hard to implement at the
+         * moment. Until we bring in such mechanism, we will need to live with
+         * not rate-limiting INODELK/ENTRYLK/LK fops
+         */
+
+        if ((req->prognum == GLUSTER_FOP_PROGRAM) &&
+            (req->progver == GLUSTER_FOP_VERSION)) {
+                if ((req->procnum == GFS3_OP_INODELK) ||
+                    (req->procnum == GFS3_OP_FINODELK) ||
+                    (req->procnum == GFS3_OP_ENTRYLK) ||
+                    (req->procnum == GFS3_OP_FENTRYLK) ||
+                    (req->procnum == GFS3_OP_LK))
+                        return _gf_true;
+        }
+        return _gf_false;
+}
+
 int
-rpcsvc_request_outstanding (rpcsvc_t *svc, rpc_transport_t *trans, int delta)
+rpcsvc_request_outstanding (rpcsvc_request_t *req, int delta)
 {
         int ret = 0;
         int old_count = 0;
         int new_count = 0;
         int limit = 0;
 
-        pthread_mutex_lock (&trans->lock);
+        if (rpcsvc_can_outstanding_req_be_ignored (req))
+                return 0;
+
+        pthread_mutex_lock (&req->trans->lock);
         {
-                limit = svc->outstanding_rpc_limit;
+                limit = req->svc->outstanding_rpc_limit;
                 if (!limit)
                         goto unlock;
 
-                old_count = trans->outstanding_rpc_count;
-                trans->outstanding_rpc_count += delta;
-                new_count = trans->outstanding_rpc_count;
+                old_count = req->trans->outstanding_rpc_count;
+                req->trans->outstanding_rpc_count += delta;
+                new_count = req->trans->outstanding_rpc_count;
 
                 if (old_count <= limit && new_count > limit)
-                        ret = rpc_transport_throttle (trans, _gf_true);
+                        ret = rpc_transport_throttle (req->trans, _gf_true);
 
                 if (old_count > limit && new_count <= limit)
-                        ret = rpc_transport_throttle (trans, _gf_false);
+                        ret = rpc_transport_throttle (req->trans, _gf_false);
         }
 unlock:
-        pthread_mutex_unlock (&trans->lock);
+        pthread_mutex_unlock (&req->trans->lock);
 
         return ret;
 }
@@ -315,7 +354,8 @@ rpcsvc_request_destroy (rpcsvc_request_t *req)
            to the client. It is time to decrement the
            outstanding request counter by 1.
         */
-        rpcsvc_request_outstanding (req->svc, req->trans, -1);
+        if (req->prognum) //Only for initialized requests
+                rpcsvc_request_outstanding (req, -1);
 
         rpc_transport_unref (req->trans);
 
@@ -367,13 +407,7 @@ rpcsvc_request_init (rpcsvc_t *svc, rpc_transport_t *trans,
          * been copied into the required sections of the req structure,
          * we just need to fill in the meta-data about it now.
          */
-        req->cred.flavour = rpc_call_cred_flavour (callmsg);
-        req->cred.datalen = rpc_call_cred_len (callmsg);
-        req->verf.flavour = rpc_call_verf_flavour (callmsg);
-        req->verf.datalen = rpc_call_verf_len (callmsg);
-
-        /* AUTH */
-        rpcsvc_auth_request_init (req);
+        rpcsvc_auth_request_init (req, callmsg);
         return req;
 }
 
@@ -403,12 +437,6 @@ rpcsvc_request_create (rpcsvc_t *svc, rpc_transport_t *trans,
                 goto err;
         }
 
-        /* We just received a new request from the wire. Account for
-           it in the outsanding request counter to make sure we don't
-           ingest too many concurrent requests from the same client.
-        */
-        ret = rpcsvc_request_outstanding (svc, trans, +1);
-
         msgbuf = msg->vector[0].iov_base;
         msglen = msg->vector[0].iov_len;
 
@@ -426,19 +454,28 @@ rpcsvc_request_create (rpcsvc_t *svc, rpc_transport_t *trans,
         ret = -1;
         rpcsvc_request_init (svc, trans, &rpcmsg, progmsg, msg, req);
 
-        gf_log (GF_RPCSVC, GF_LOG_TRACE, "received rpc-message (XID: 0x%lx, "
-                "Ver: %ld, Program: %ld, ProgVers: %ld, Proc: %ld) from"
-                " rpc-transport (%s)", rpc_call_xid (&rpcmsg),
+        gf_log (GF_RPCSVC, GF_LOG_TRACE, "received rpc-message "
+		"(XID: 0x%" GF_PRI_RPC_XID ", Ver: %" GF_PRI_RPC_VERSION ", Program: %" GF_PRI_RPC_PROG_ID ", "
+		"ProgVers: %" GF_PRI_RPC_PROG_VERS ", Proc: %" GF_PRI_RPC_PROC ") "
+                "from rpc-transport (%s)", rpc_call_xid (&rpcmsg),
                 rpc_call_rpcvers (&rpcmsg), rpc_call_program (&rpcmsg),
                 rpc_call_progver (&rpcmsg), rpc_call_progproc (&rpcmsg),
                 trans->name);
+
+        /* We just received a new request from the wire. Account for
+           it in the outsanding request counter to make sure we don't
+           ingest too many concurrent requests from the same client.
+        */
+        if (req->prognum) //Only for initialized requests
+                ret = rpcsvc_request_outstanding (req, +1);
 
         if (rpc_call_rpcvers (&rpcmsg) != 2) {
                 /* LOG- TODO: print rpc version, also print the peerinfo
                    from transport */
                 gf_log (GF_RPCSVC, GF_LOG_ERROR, "RPC version not supported "
-                        "(XID: 0x%lx, Ver: %ld, Prog: %ld, ProgVers: %ld, "
-                        "Proc: %ld) from trans (%s)", rpc_call_xid (&rpcmsg),
+			"(XID: 0x%" GF_PRI_RPC_XID ", Ver: %" GF_PRI_RPC_VERSION ", Program: %" GF_PRI_RPC_PROG_ID ", "
+			"ProgVers: %" GF_PRI_RPC_PROG_VERS ", Proc: %" GF_PRI_RPC_PROC ") "
+			"from trans (%s)", rpc_call_xid (&rpcmsg),
                         rpc_call_rpcvers (&rpcmsg), rpc_call_program (&rpcmsg),
                         rpc_call_progver (&rpcmsg), rpc_call_progproc (&rpcmsg),
                         trans->name);
@@ -454,8 +491,9 @@ rpcsvc_request_create (rpcsvc_t *svc, rpc_transport_t *trans,
                  */
                 rpcsvc_request_seterr (req, AUTH_ERROR);
                 gf_log (GF_RPCSVC, GF_LOG_ERROR, "auth failed on request. "
-                        "(XID: 0x%lx, Ver: %ld, Prog: %ld, ProgVers: %ld, "
-                        "Proc: %ld) from trans (%s)", rpc_call_xid (&rpcmsg),
+			"(XID: 0x%" GF_PRI_RPC_XID ", Ver: %" GF_PRI_RPC_VERSION ", Program: %" GF_PRI_RPC_PROG_ID ", "
+			"ProgVers: %" GF_PRI_RPC_PROG_VERS ", Proc: %" GF_PRI_RPC_PROC ") "
+                        "from trans (%s)", rpc_call_xid (&rpcmsg),
                         rpc_call_rpcvers (&rpcmsg), rpc_call_program (&rpcmsg),
                         rpc_call_progver (&rpcmsg), rpc_call_progproc (&rpcmsg),
                         trans->name);
@@ -800,15 +838,9 @@ err:
         return txrecord;
 }
 
-static inline int
-rpcsvc_get_callid (rpcsvc_t *rpc)
-{
-        return GF_UNIVERSAL_ANSWER;
-}
-
 int
 rpcsvc_fill_callback (int prognum, int progver, int procnum, int payload,
-                      uint64_t xid, struct rpc_msg *request)
+                      uint32_t xid, struct rpc_msg *request)
 {
         int   ret          = -1;
 
@@ -873,9 +905,9 @@ out:
         return txrecord;
 }
 
-struct iobuf *
+static struct iobuf *
 rpcsvc_callback_build_record (rpcsvc_t *rpc, int prognum, int progver,
-                              int procnum, size_t payload, uint64_t xid,
+                              int procnum, size_t payload, u_long xid,
                               struct iovec *recbuf)
 {
         struct rpc_msg           request     = {0, };
@@ -895,7 +927,7 @@ rpcsvc_callback_build_record (rpcsvc_t *rpc, int prognum, int progver,
                                     &request);
         if (ret == -1) {
                 gf_log ("rpcsvc", GF_LOG_WARNING, "cannot build a rpc-request "
-                        "xid (%"PRIu64")", xid);
+                        "xid (%" GF_PRI_RPC_XID ")", xid);
                 goto out;
         }
 
@@ -942,7 +974,6 @@ rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
         rpc_transport_req_t    req;
         int                    ret         = -1;
         int                    proglen     = 0;
-        uint64_t               callid      = 0;
 
         if (!rpc) {
                 goto out;
@@ -950,15 +981,14 @@ rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
 
         memset (&req, 0, sizeof (req));
 
-        callid = rpcsvc_get_callid (rpc);
-
         if (proghdr) {
                 proglen += iov_length (proghdr, proghdrcount);
         }
 
         request_iob = rpcsvc_callback_build_record (rpc, prog->prognum,
                                                     prog->progver, procnum,
-                                                    proglen, callid,
+                                                    proglen,
+                                                    GF_UNIVERSAL_ANSWER,
                                                     &rpchdr);
         if (!request_iob) {
                 gf_log ("rpcsvc", GF_LOG_WARNING,
@@ -1183,7 +1213,7 @@ rpcsvc_submit_generic (rpcsvc_request_t *req, struct iovec *proghdr,
         iobref_add (iobref, replyiob);
 
         /* cache the request in the duplicate request cache for appropriate ops */
-        if (req->reply) {
+        if ((req->reply) && (rpcsvc_need_drc (req))) {
                 drc = req->svc->drc;
 
                 LOCK (&drc->lock);
@@ -1203,14 +1233,14 @@ rpcsvc_submit_generic (rpcsvc_request_t *req, struct iovec *proghdr,
                         "rpc-transport (%s)", req->xid,
                         req->prog ? req->prog->progname : "(not matched)",
                         req->prog ? req->prog->progver : 0,
-                        req->procnum, trans->name);
+                        req->procnum, trans ? trans->name : "");
         } else {
                 gf_log (GF_RPCSVC, GF_LOG_TRACE,
                         "submitted reply for rpc-message (XID: 0x%x, "
                         "Program: %s, ProgVers: %d, Proc: %d) to rpc-transport "
                         "(%s)", req->xid, req->prog ? req->prog->progname: "-",
                         req->prog ? req->prog->progver : 0,
-                        req->procnum, trans->name);
+                        req->procnum, trans ? trans->name : "");
         }
 
 disconnect_exit:
@@ -1259,7 +1289,7 @@ rpcsvc_program_register_portmap (rpcsvc_program_t *newprog, uint32_t port)
         if (!(pmap_set (newprog->prognum, newprog->progver, IPPROTO_TCP,
                         port))) {
                 gf_log (GF_RPCSVC, GF_LOG_ERROR, "Could not register with"
-                        " portmap");
+                        " portmap %d %d %u", newprog->prognum, newprog->progver, port);
                 goto out;
         }
 
@@ -1889,8 +1919,7 @@ rpcsvc_init_options (rpcsvc_t *svc, dict_t *options)
         if (!svc->register_portmap)
                 gf_log (GF_RPCSVC, GF_LOG_DEBUG, "Portmap registration "
                         "disabled");
-
-        ret = rpcsvc_set_outstanding_rpc_limit (svc, options);
+        ret = 0;
 out:
         return ret;
 }
@@ -2022,10 +2051,15 @@ out:
 }
 
 /*
- * Reconfigure() the rpc.outstanding-rpc-limit param.
+ * Configure() the rpc.outstanding-rpc-limit param.
+ * If dict_get_int32() for dict-key "rpc.outstanding-rpc-limit" FAILS,
+ * it would set the value as "defvalue". Otherwise it would fetch the
+ * value and round up to multiple-of-8. defvalue must be +ve.
+ *
+ * NB: defval or set-value "0" is special which means unlimited/65536.
  */
 int
-rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options)
+rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options, int defvalue)
 {
         int            ret        = -1; /* FAILURE */
         int            rpclim     = 0;
@@ -2034,30 +2068,30 @@ rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options)
         if ((!svc) || (!options))
                 return (-1);
 
-        /* Reconfigure() the rpc.outstanding-rpc-limit param */
+        if ((defvalue < RPCSVC_MIN_OUTSTANDING_RPC_LIMIT) ||
+            (defvalue > RPCSVC_MAX_OUTSTANDING_RPC_LIMIT)) {
+                return (-1);
+        }
+
+        /* Fetch the rpc.outstanding-rpc-limit from dict. */
         ret = dict_get_int32 (options, rpclimkey, &rpclim);
         if (ret < 0) {
                 /* Fall back to default for FAILURE */
-                rpclim = RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT;
-        } else {
-                /* SUCCESS: round off to multiple of 8.
-                 * If the input value fails Boundary check, fall back to
-                 * default i.e. RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT.
-                 * NB: value 0 is special, means its unset i.e. unlimited.
-                 */
-                rpclim = ((rpclim + 8 - 1) >> 3) * 8;
-                if (rpclim < RPCSVC_MIN_OUTSTANDING_RPC_LIMIT) {
-                        rpclim = RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT;
-                } else if (rpclim > RPCSVC_MAX_OUTSTANDING_RPC_LIMIT) {
-                        rpclim = RPCSVC_MAX_OUTSTANDING_RPC_LIMIT;
-                }
+                rpclim = defvalue;
+        }
+
+        /* Round up to multiple-of-8. It must not exceed
+         * RPCSVC_MAX_OUTSTANDING_RPC_LIMIT.
+         */
+        rpclim = ((rpclim + 8 - 1) >> 3) * 8;
+        if (rpclim > RPCSVC_MAX_OUTSTANDING_RPC_LIMIT) {
+                rpclim = RPCSVC_MAX_OUTSTANDING_RPC_LIMIT;
         }
 
         if (svc->outstanding_rpc_limit != rpclim) {
                 svc->outstanding_rpc_limit = rpclim;
                 gf_log (GF_RPCSVC, GF_LOG_INFO,
-                                   "Configured %s with value %d",
-                                   rpclimkey, rpclim);
+                        "Configured %s with value %d", rpclimkey, rpclim);
         }
 
         return (0);
@@ -2072,7 +2106,7 @@ rpcsvc_init (xlator_t *xl, glusterfs_ctx_t *ctx, dict_t *options,
         rpcsvc_t          *svc              = NULL;
         int                ret              = -1;
 
-        if ((!ctx) || (!options))
+        if ((!xl) || (!ctx) || (!options))
                 return NULL;
 
         svc = GF_CALLOC (1, sizeof (*svc), gf_common_mt_rpcsvc_t);
@@ -2179,6 +2213,13 @@ rpcsvc_transport_peer_check_search (dict_t *options, char *pattern,
 #else
                         ret = fnmatch (addrtok, hostname, 0);
 #endif
+                        if (ret == 0)
+                                goto err;
+                }
+
+                /* Compare IPv4 subnetwork */
+                if (strchr (addrtok, '/')) {
+                        ret = match_subnet_v4 (addrtok, ip);
                         if (ret == 0)
                                 goto err;
                 }
@@ -2329,8 +2370,20 @@ rpcsvc_auth_check (rpcsvc_t *svc, char *volname,
 
         ret = dict_get_str (options, srchstr, &reject_str);
         GF_FREE (srchstr);
-        if (reject_str == NULL && !strcmp ("*", allow_str))
-                return RPCSVC_AUTH_ACCEPT;
+
+        /*
+         * If "reject_str" is being set as '*' (anonymous), then NFS-server
+         * would reject everything. If the "reject_str" is not set and
+         * "allow_str" is set as '*' (anonymous), then NFS-server would
+         * accept mount requests from all clients.
+         */
+        if (reject_str != NULL) {
+                if (!strcmp ("*", reject_str))
+                        return RPCSVC_AUTH_REJECT;
+        } else {
+                if (!strcmp ("*", allow_str))
+                        return RPCSVC_AUTH_ACCEPT;
+        }
 
         /* Non-default rule, authenticate */
         if (!get_host_name (client_ip, &ip))
@@ -2461,6 +2514,71 @@ out:
         GF_FREE (srchstr);
 
         return addrstr;
+}
+
+/*
+ * match_subnet_v4() takes subnetwork address pattern and checks
+ * if the target IPv4 address has the same network address with
+ * the help of network mask.
+ *
+ * Returns 0 for SUCCESS and -1 otherwise.
+ *
+ * NB: Validation of subnetwork address pattern is not required
+ *     as it's already being done at the time of CLI SET.
+ */
+static int
+match_subnet_v4 (const char *addrtok, const char *ipaddr)
+{
+        char                 *slash     = NULL;
+        char                 *netaddr   = NULL;
+        long                  prefixlen = -1;
+        int                   ret       = -1;
+        uint32_t              shift     = 0;
+        struct sockaddr_in    sin1      = {0, };
+        struct sockaddr_in    sin2      = {0, };
+        struct sockaddr_in    mask      = {0, };
+
+        /* Copy the input */
+        netaddr = gf_strdup (addrtok);
+        if (netaddr == NULL) /* ENOMEM */
+                goto out;
+
+        /* Find the network socket addr of target */
+        if (inet_pton (AF_INET, ipaddr, &sin1.sin_addr) == 0)
+                goto out;
+
+        /* Find the network socket addr of subnet pattern */
+        slash = strchr (netaddr, '/');
+        *slash = '\0';
+        if (inet_pton (AF_INET, netaddr, &sin2.sin_addr) == 0)
+                goto out;
+
+        /*
+         * Find the network mask in network byte order.
+         * NB: 32 : Max len of IPv4 address.
+         */
+        prefixlen = atoi (slash + 1);
+        shift = 32 - (uint32_t)prefixlen;
+        mask.sin_addr.s_addr = htonl ((uint32_t)~0 << shift);
+
+        /*
+         * Check if both have same network address.
+         * Extract the network address from the IP addr by applying the
+         * network mask. If they match, return SUCCESS. i.e.
+         *
+         * (x == y) <=> (x ^ y == 0)
+         * (x & y) ^ (x & z) <=> x & (y ^ z)
+         *
+         * ((ip1 & mask) == (ip2 & mask)) <=> ((mask & (ip1 ^ ip2)) == 0)
+         */
+        if (((mask.sin_addr.s_addr) &
+             (sin1.sin_addr.s_addr ^ sin2.sin_addr.s_addr)) != 0)
+                goto out;
+
+        ret = 0; /* SUCCESS */
+out:
+        GF_FREE (netaddr);
+        return ret;
 }
 
 

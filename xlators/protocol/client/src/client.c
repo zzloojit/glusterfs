@@ -21,6 +21,7 @@
 #include "statedump.h"
 #include "compat-errno.h"
 
+#include "xdr-rpc.h" 
 #include "glusterfs3.h"
 
 extern rpc_clnt_prog_t clnt_handshake_prog;
@@ -943,6 +944,7 @@ client_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         args.vector = vector;
         args.count  = count;
         args.offset = off;
+        args.size   = iov_length (vector, count);
         args.flags  = flags;
         args.iobref = iobref;
         args.xdata = xdata;
@@ -2204,7 +2206,7 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                                         "will keep trying to connect to "
                                         "glusterd until brick's port is "
                                         "available",
-                                  conf->rpc->conn.trans->peerinfo.identifier);
+                                  conf->rpc->conn.name);
 
                                 if (conf->portmap_err_logged)
                                         conf->disconnect_err_logged = 1;
@@ -2457,7 +2459,7 @@ client_init_grace_timer (xlator_t *this, dict_t *options,
         conf->grace_ts.tv_nsec  = 0;
 
         gf_log (this->name, GF_LOG_DEBUG, "Client grace timeout "
-                "value = %"PRIu64, conf->grace_ts.tv_sec);
+                "value = %"GF_PRI_SECOND, conf->grace_ts.tv_sec);
 
         ret = 0;
 out:
@@ -2841,13 +2843,19 @@ struct volume_options options[] = {
         { .key   = {"lk-heal"},
           .type  = GF_OPTION_TYPE_BOOL,
           .default_value = "off",
-          .description = "Enables or disables the lock heal."
+          .description = "When the connection to client is lost, server "
+                         "cleans up all the locks held by the client. After "
+                         "the connection is restored, the client reacquires "
+                         "(heals) the fcntl locks released by the server."
         },
         { .key   = {"grace-timeout"},
           .type  = GF_OPTION_TYPE_INT,
           .min   = 10,
           .max   = 1800,
-          .description = "Sets the grace-timeout value. Valid range 10-1800."
+          .default_value = "10",
+          .description = "Specifies the duration for the lock state to be "
+                         "maintained on the client after a network "
+                         "disconnection. Range 10-1800 seconds."
         },
         {.key  = {"tcp-window-size"},
          .type = GF_OPTION_TYPE_SIZET,

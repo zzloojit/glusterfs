@@ -33,6 +33,7 @@ server_decode_groups (call_frame_t *frame, rpcsvc_request_t *req)
         if (frame->root->ngrps == 0)
                 return 0;
 
+	/* ngrps cannot be bigger than USHRT_MAX(65535) */
         if (frame->root->ngrps > GF_MAX_AUX_GROUPS)
                 return -1;
 
@@ -302,6 +303,11 @@ get_frame_from_request (rpcsvc_request_t *req)
 {
         call_frame_t  *frame = NULL;
         client_t      *client = NULL;
+        client_t      *tmp_client = NULL;
+        xlator_t  *this = NULL;
+        server_conf_t *priv = NULL;
+        clienttable_t *clienttable = NULL;
+        unsigned int   i           = 0;
 
         GF_VALIDATE_OR_GOTO ("server", req, out);
 
@@ -314,6 +320,57 @@ get_frame_from_request (rpcsvc_request_t *req)
         frame->root->op       = req->procnum;
 
         frame->root->unique   = req->xid;
+
+        client = req->trans->xl_private;
+        this = req->trans->xl;
+        priv = this->private;
+        clienttable = this->ctx->clienttable;
+
+        for (i = 0; i < clienttable->max_clients; i++) {
+                tmp_client = clienttable->cliententries[i].client;
+                if (client == tmp_client) {
+                        /* for non trusted clients username and password
+                           would not have been set. So for non trusted clients
+                           (i.e clients not from the same machine as the brick,
+                           and clients from outside the storage pool)
+                           do the root-squashing.
+                           TODO: If any client within the storage pool (i.e
+                           mounting within a machine from the pool but using
+                           other machine's ip/hostname from the same pool)
+                           is present treat it as a trusted client
+                        */
+                        if (!client->auth.username && req->pid != NFS_PID)
+                                RPC_AUTH_ROOT_SQUASH (req);
+
+                        /* Problem: If we just check whether the client is
+                           trusted client and do not do root squashing for
+                           them, then for smb clients and UFO clients root
+                           squashing will never happen as they use the fuse
+                           mounts done within the trusted pool (i.e they are
+                           trusted clients).
+                           Solution: To fix it, do root squashing for trusted
+                           clients also. If one wants to have a client within
+                           the storage pool for which root-squashing does not
+                           happen, then the client has to be mounted with
+                           --no-root-squash option. But for defrag client and
+                           gsyncd client do not do root-squashing.
+                        */
+                        if (client->auth.username &&
+                            req->pid != GF_CLIENT_PID_NO_ROOT_SQUASH &&
+                            req->pid != GF_CLIENT_PID_GSYNCD &&
+                            req->pid != GF_CLIENT_PID_DEFRAG)
+                                RPC_AUTH_ROOT_SQUASH (req);
+
+                        /* For nfs clients the server processes will be running
+                           within the trusted storage pool machines. So if we
+                           do not do root-squashing for nfs servers, thinking
+                           that its a trusted client, then root-squashing wont
+                           work for nfs clients.
+                        */
+                        if (req->pid == NFS_PID)
+                                RPC_AUTH_ROOT_SQUASH (req);
+                }
+        }
 
         frame->root->uid      = req->uid;
         frame->root->gid      = req->gid;
@@ -688,7 +745,7 @@ serialize_rsp_direntp (gf_dirent_t *entries, gfs3_readdirp_rsp *rsp)
                 /* if 'dict' is present, pack it */
                 if (entry->dict) {
                         trav->dict.dict_len = dict_serialized_length (entry->dict);
-                        if (trav->dict.dict_len < 0) {
+                        if (trav->dict.dict_len > UINT_MAX) {
                                 gf_log (THIS->name, GF_LOG_ERROR,
                                         "failed to get serialized length "
                                         "of reply dict");
@@ -934,4 +991,429 @@ server_ctx_get (client_t *client, xlator_t *xlator)
 
 out:
         return ctx;
+}
+
+int
+auth_set_username_passwd (dict_t *input_params, dict_t *config_params,
+                          client_t *client)
+{
+        int      ret           = 0;
+        data_t  *allow_user    = NULL;
+        data_t  *passwd_data   = NULL;
+        char    *username      = NULL;
+        char    *password      = NULL;
+        char    *brick_name    = NULL;
+        char    *searchstr     = NULL;
+        char    *username_str  = NULL;
+        char    *tmp           = NULL;
+        char    *username_cpy  = NULL;
+
+        ret = dict_get_str (input_params, "username", &username);
+        if (ret) {
+                gf_log ("auth/login", GF_LOG_DEBUG,
+                        "username not found, returning DONT-CARE");
+                /* For non trusted clients username and password
+                   will not be there. So dont reject the client.
+                */
+                ret = 0;
+                goto out;
+        }
+
+        ret = dict_get_str (input_params, "password", &password);
+        if (ret) {
+                gf_log ("auth/login", GF_LOG_WARNING,
+                        "password not found, returning DONT-CARE");
+                goto out;
+        }
+
+        ret = dict_get_str (input_params, "remote-subvolume", &brick_name);
+        if (ret) {
+                gf_log ("auth/login", GF_LOG_ERROR,
+                        "remote-subvolume not specified");
+                ret = -1;
+                goto out;
+        }
+
+        ret = gf_asprintf (&searchstr, "auth.login.%s.allow", brick_name);
+        if (-1 == ret) {
+                ret = 0;
+                goto out;
+        }
+
+        allow_user = dict_get (config_params, searchstr);
+        GF_FREE (searchstr);
+
+        if (allow_user) {
+                username_cpy = gf_strdup (allow_user->data);
+                if (!username_cpy)
+                        goto out;
+
+                username_str = strtok_r (username_cpy, " ,", &tmp);
+
+                while (username_str) {
+                        if (!fnmatch (username_str, username, 0)) {
+                                ret = gf_asprintf (&searchstr,
+                                                   "auth.login.%s.password",
+                                                   username);
+                                if (-1 == ret)
+                                        goto out;
+
+                                passwd_data = dict_get (config_params,
+                                                        searchstr);
+                                GF_FREE (searchstr);
+
+                                if (!passwd_data) {
+                                        gf_log ("auth/login", GF_LOG_ERROR,
+                                                "wrong username/password "
+                                                "combination");
+                                        ret = -1;
+                                        goto out;
+                                }
+
+                                ret = !((strcmp (data_to_str (passwd_data),
+                                                    password))?0: -1);
+                                if (!ret) {
+                                        client->auth.username =
+                                                gf_strdup (username);
+                                        client->auth.passwd =
+                                                gf_strdup (password);
+                                }
+                                if (ret == -1)
+                                        gf_log ("auth/login", GF_LOG_ERROR,
+                                                "wrong password for user %s",
+                                                username);
+                                break;
+                        }
+                        username_str = strtok_r (NULL, " ,", &tmp);
+                }
+        }
+
+out:
+        GF_FREE (username_cpy);
+
+        return ret;
+}
+
+int32_t
+gf_barrier_transmit (server_conf_t *conf, gf_barrier_payload_t *payload)
+{
+        gf_barrier_t            *barrier = NULL;
+        int32_t                  ret     = -1;
+        client_t                *client  = NULL;
+        gf_boolean_t             lk_heal = _gf_false;
+        call_frame_t            *frame   = NULL;
+        server_state_t          *state   = NULL;
+
+        GF_VALIDATE_OR_GOTO ("barrier", conf, out);
+        GF_VALIDATE_OR_GOTO ("barrier", conf->barrier, out);
+        GF_VALIDATE_OR_GOTO ("barrier", payload, out);
+
+        barrier = conf->barrier;
+
+        frame = payload->frame;
+        if (frame) {
+                state = CALL_STATE (frame);
+                frame->local = NULL;
+                client = frame->root->client;
+        }
+        /* currently lk fops are not barrier'ed. This is reflecting code in
+         * server_submit_reply */
+        if (client)
+                lk_heal = ((server_conf_t *) client->this->private)->lk_heal;
+
+        ret = rpcsvc_submit_generic (payload->req, &payload->rsp, 1,
+                                     payload->payload, payload->payload_count,
+                                     payload->iobref);
+        iobuf_unref (payload->iob);
+        if (ret == -1) {
+                gf_log_callingfn ("", GF_LOG_ERROR, "Reply submission failed");
+                if (frame && client && !lk_heal) {
+                        server_connection_cleanup (frame->this, client,
+                                                  INTERNAL_LOCKS | POSIX_LOCKS);
+                } else {
+                        /* TODO: Failure of open(dir), create, inodelk, entrylk
+                           or lk fops send failure must be handled specially. */
+                }
+                goto ret;
+        }
+
+        ret = 0;
+ret:
+        if (state) {
+                free_state (state);
+        }
+
+        if (frame) {
+                gf_client_unref (client);
+                STACK_DESTROY (frame->root);
+        }
+
+        if (payload->free_iobref) {
+                iobref_unref (payload->iobref);
+        }
+out:
+        return ret;
+}
+
+gf_barrier_payload_t *
+gf_barrier_dequeue (gf_barrier_t *barrier)
+{
+        gf_barrier_payload_t  *payload = NULL;
+
+        if (!barrier || list_empty (&barrier->queue))
+                return NULL;
+
+        payload = list_entry (barrier->queue.next,
+                              gf_barrier_payload_t, list);
+        if (payload) {
+                list_del_init (&payload->list);
+                barrier->cur_size--;
+        }
+
+        return payload;
+}
+
+
+void*
+gf_barrier_dequeue_start (void *data)
+{
+        server_conf_t           *conf = NULL;
+        gf_barrier_t            *barrier = NULL;
+        gf_barrier_payload_t    *payload = NULL;
+
+        conf = (server_conf_t *)data;
+        if (!conf || !conf->barrier)
+                return NULL;
+        barrier = conf->barrier;
+
+        LOCK (&barrier->lock);
+        {
+                while (barrier->cur_size) {
+                        payload = gf_barrier_dequeue (barrier);
+                        if (payload) {
+                                if (gf_barrier_transmit (conf, payload)) {
+                                        gf_log ("server", GF_LOG_WARNING,
+                                                "Failed to transmit");
+                                }
+                                GF_FREE (payload);
+                        }
+                }
+        }
+        UNLOCK (&barrier->lock);
+        return NULL;
+}
+
+void
+gf_barrier_timeout (void *data)
+{
+        server_conf_t *conf = NULL;
+        gf_barrier_t  *barrier = NULL;
+        gf_boolean_t   need_dequeue = _gf_false;
+
+        conf = (server_conf_t *)data;
+        if (!conf || !conf->barrier)
+                goto out;
+        barrier = conf->barrier;
+
+        gf_log ("", GF_LOG_INFO, "barrier timed-out");
+        LOCK (&barrier->lock);
+        {
+                need_dequeue = barrier->on;
+                barrier->on = _gf_false;
+        }
+        UNLOCK (&barrier->lock);
+
+        if (need_dequeue == _gf_true)
+                gf_barrier_dequeue_start (data);
+out:
+        return;
+}
+
+
+int32_t
+gf_barrier_start (xlator_t *this)
+{
+        server_conf_t *conf = NULL;
+        gf_barrier_t  *barrier = NULL;
+        int32_t        ret  = -1;
+        struct timespec time = {0,};
+
+        conf = this->private;
+
+        GF_VALIDATE_OR_GOTO ("server", this, out);
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+        GF_VALIDATE_OR_GOTO (this->name, conf->barrier, out);
+
+        barrier = conf->barrier;
+
+        gf_log (this->name, GF_LOG_INFO, "barrier start called");
+        LOCK (&barrier->lock);
+        {
+                /* if barrier is on, reset timer */
+                if (barrier->on == _gf_true) {
+                        ret = gf_timer_call_cancel (this->ctx, barrier->timer);
+                        if (ret) {
+                                gf_log (this->name, GF_LOG_ERROR, "Failed to "
+                                        "unset timer, failing barrier start");
+                                goto unlock;
+                        }
+                }
+
+                barrier->on = _gf_true;
+                time.tv_sec = barrier->time_out;
+                time.tv_nsec = 0;
+
+                barrier->timer = gf_timer_call_after (this->ctx, time,
+                                                      gf_barrier_timeout,
+                                                      (void *)conf);
+                if (!barrier->timer) {
+                        gf_log (this->name, GF_LOG_ERROR, "Failed to set "
+                                "timer, failing barrier start");
+                        barrier->on = _gf_false;
+                }
+        }
+unlock:
+        UNLOCK (&barrier->lock);
+
+        ret = 0;
+out:
+        return ret;
+}
+
+int32_t
+gf_barrier_stop (xlator_t *this)
+{
+        server_conf_t *conf = NULL;
+        gf_barrier_t  *barrier = NULL;
+        int32_t        ret  = -1;
+        gf_boolean_t   need_dequeue = _gf_false;
+
+        conf = this->private;
+
+        GF_VALIDATE_OR_GOTO ("server", this, out);
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+        GF_VALIDATE_OR_GOTO (this->name, conf->barrier, out);
+
+        barrier = conf->barrier;
+
+        gf_log (this->name, GF_LOG_INFO, "barrier stop called");
+        LOCK (&barrier->lock);
+        {
+                need_dequeue = barrier->on;
+                barrier->on = _gf_false;
+        }
+        UNLOCK (&barrier->lock);
+
+        if (need_dequeue == _gf_true) {
+                gf_timer_call_cancel (this->ctx, barrier->timer);
+                ret = gf_thread_create (&conf->barrier_th, NULL,
+                                        gf_barrier_dequeue_start,
+                                        conf);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_CRITICAL,
+                                "Failed to start un-barriering");
+                        goto out;
+                }
+        }
+        ret = 0;
+out:
+        return ret;
+}
+
+int32_t
+gf_barrier_fops_configure (xlator_t *this, gf_barrier_t *barrier, char *str)
+{
+        int32_t         ret = -1;
+        char           *dup_str = NULL;
+        char           *str_tok = NULL;
+        char           *save_ptr = NULL;
+        uint64_t        fops = 0;
+
+        /* by defaul fsync & flush needs to be barriered */
+
+        fops |= 1 << GFS3_OP_FSYNC;
+        fops |= 1 << GFS3_OP_FLUSH;
+
+        if (!str)
+                goto done;
+
+        dup_str = gf_strdup (str);
+        if (!dup_str)
+                goto done;
+
+        str_tok = strtok_r (dup_str, ",", &save_ptr);
+        if (!str_tok)
+                goto done;
+
+        fops = 0;
+        while (str_tok) {
+                if (!strcmp(str_tok, "writev")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_WRITE);
+                } else if (!strcmp(str_tok, "fsync")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_FSYNC);
+                } else if (!strcmp(str_tok, "read")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_READ);
+                } else if (!strcmp(str_tok, "rename")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_RENAME);
+                } else if (!strcmp(str_tok, "flush")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_FLUSH);
+                } else if (!strcmp(str_tok, "ftruncate")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_FTRUNCATE);
+                } else if (!strcmp(str_tok, "fallocate")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_FALLOCATE);
+                } else if (!strcmp(str_tok, "rmdir")) {
+                        fops |= ((uint64_t)1 << GFS3_OP_RMDIR);
+                }  else {
+                        gf_log ("barrier", GF_LOG_ERROR,
+                                "Invalid barrier fop %s", str_tok);
+                }
+
+                str_tok = strtok_r (NULL, ",", &save_ptr);
+        }
+done:
+        LOCK (&barrier->lock);
+        {
+                barrier->fops = fops;
+        }
+        UNLOCK (&barrier->lock);
+        ret = 0;
+
+        GF_FREE (dup_str);
+        return ret;
+}
+
+void
+gf_barrier_enqueue (gf_barrier_t *barrier, gf_barrier_payload_t *payload)
+{
+        list_add_tail (&payload->list, &barrier->queue);
+        barrier->cur_size++;
+}
+
+gf_barrier_payload_t *
+gf_barrier_payload (rpcsvc_request_t *req, struct iovec *rsp,
+                    call_frame_t *frame, struct iovec *payload_orig,
+                    int payloadcount, struct iobref *iobref,
+                    struct iobuf *iob, gf_boolean_t free_iobref)
+{
+        gf_barrier_payload_t *payload = NULL;
+
+        if (!rsp)
+                return NULL;
+
+        payload = GF_CALLOC (1, sizeof (*payload),1);
+        if (!payload)
+                return NULL;
+
+        INIT_LIST_HEAD (&payload->list);
+
+        payload->req = req;
+        memcpy (&payload->rsp, rsp, sizeof (struct iovec));
+        payload->frame = frame;
+        payload->payload = payload_orig;
+        payload->payload_count = payloadcount;
+        payload->iobref = iobref;
+        payload->iob = iob;
+        payload->free_iobref = free_iobref;
+
+        return payload;
 }

@@ -36,6 +36,7 @@
 #include <stdarg.h>
 #include "defaults.h"
 #include "logging.h"
+#include "cli1-xdr.h"
 
 #define MAX_LIST_MEMBERS 100
 
@@ -508,7 +509,7 @@ out:
         return 0;
 }
 
-inline int
+static inline int
 ios_stats_cleanup (xlator_t *this, inode_t *inode)
 {
 
@@ -916,8 +917,19 @@ ios_dump_args_init (struct ios_dump_args *args, ios_dump_type_t type,
         return ret;
 }
 
+static void
+ios_global_stats_clear (struct ios_global_stats *stats, struct timeval *now)
+{
+        GF_ASSERT (stats);
+        GF_ASSERT (now);
+
+        memset (stats, 0, sizeof (*stats));
+        stats->started_at = *now;
+}
+
 int
-io_stats_dump (xlator_t *this, struct ios_dump_args *args)
+io_stats_dump (xlator_t *this, struct ios_dump_args *args,
+               gf1_cli_info_op op, gf_boolean_t is_peek)
 {
         struct ios_conf         *conf = NULL;
         struct ios_global_stats  cumulative = {0, };
@@ -935,18 +947,32 @@ io_stats_dump (xlator_t *this, struct ios_dump_args *args)
         gettimeofday (&now, NULL);
         LOCK (&conf->lock);
         {
-                cumulative  = conf->cumulative;
-                incremental = conf->incremental;
+                if (op == GF_CLI_INFO_ALL ||
+                    op == GF_CLI_INFO_CUMULATIVE)
+                        cumulative  = conf->cumulative;
 
-                increment = conf->increment++;
+                if (op == GF_CLI_INFO_ALL ||
+                    op == GF_CLI_INFO_INCREMENTAL) {
+                        incremental = conf->incremental;
+                        increment = conf->increment;
 
-                memset (&conf->incremental, 0, sizeof (conf->incremental));
-                conf->incremental.started_at = now;
+                        if (!is_peek) {
+                                increment = conf->increment++;
+
+                                ios_global_stats_clear (&conf->incremental,
+                                                        &now);
+                        }
+                }
         }
         UNLOCK (&conf->lock);
 
-        io_stats_dump_global (this, &cumulative, &now, -1, args);
-        io_stats_dump_global (this, &incremental, &now, increment, args);
+        if (op == GF_CLI_INFO_ALL ||
+            op == GF_CLI_INFO_CUMULATIVE)
+                io_stats_dump_global (this, &cumulative, &now, -1, args);
+
+        if (op == GF_CLI_INFO_ALL ||
+            op == GF_CLI_INFO_INCREMENTAL)
+                io_stats_dump_global (this, &incremental, &now, increment, args);
 
         return 0;
 }
@@ -2204,10 +2230,10 @@ conditional_dump (dict_t *dict, char *key, data_t *value, void *data)
                         gf_log (this->name, GF_LOG_ERROR, "failed to open %s "
                                 "for writing", filename);
                         return -1;
-                }
+                    }
                 (void) ios_dump_args_init (&args, IOS_DUMP_TYPE_FILE,
                                            logfp);
-                io_stats_dump (this, &args);
+                io_stats_dump (this, &args, GF_CLI_INFO_ALL, _gf_false);
                 fclose (logfp);
         }
         return 0;
@@ -2611,15 +2637,42 @@ ios_destroy_top_stats (struct ios_conf *conf)
         return;
 }
 
+static int
+io_stats_clear (struct ios_conf *conf)
+{
+        struct timeval      now;
+        int                 ret = -1;
+
+        GF_ASSERT (conf);
+
+        if (!gettimeofday (&now, NULL))
+        {
+            LOCK (&conf->lock);
+            {
+                    ios_global_stats_clear (&conf->cumulative, &now);
+                    ios_global_stats_clear (&conf->incremental, &now);
+                    conf->increment = 0;
+            }
+            UNLOCK (&conf->lock);
+            ret = 0;
+        }
+
+        return ret;
+}
+
 int
 reconfigure (xlator_t *this, dict_t *options)
 {
         struct ios_conf    *conf = NULL;
         int                 ret = -1;
         char               *sys_log_str = NULL;
+        char               *log_format_str = NULL;
+        char               *logger_str    = NULL;
         int                 sys_log_level = -1;
         char               *log_str = NULL;
         int                 log_level = -1;
+        int                 log_format = -1;
+        int                 logger = -1;
 
         if (!this || !this->private)
                 goto out;
@@ -2645,6 +2698,18 @@ reconfigure (xlator_t *this, dict_t *options)
         if (log_str) {
                 log_level = glusterd_check_log_level (log_str);
                 gf_log_set_loglevel (log_level);
+        }
+
+        GF_OPTION_RECONF ("logger", logger_str, options, str, out);
+        if (logger_str) {
+                logger = gf_check_logger (logger_str);
+                gf_log_set_logger (logger);
+        }
+
+        GF_OPTION_RECONF ("log-format", log_format_str, options, str, out);
+        if (log_format_str) {
+                log_format = gf_check_log_format (log_format_str);
+                gf_log_set_logformat (log_format);
         }
 
         ret = 0;
@@ -2678,6 +2743,10 @@ init (xlator_t *this)
 {
         struct ios_conf    *conf = NULL;
         char               *sys_log_str = NULL;
+        char               *logger_str  = NULL;
+        char               *log_format_str  = NULL;
+        int                 logger = -1;
+        int                 log_format = -1;
         int                 sys_log_level = -1;
         char               *log_str = NULL;
         int                 log_level = -1;
@@ -2736,6 +2805,19 @@ init (xlator_t *this)
                 gf_log_set_loglevel (log_level);
         }
 
+        GF_OPTION_INIT ("logger", logger_str, str, out);
+        if (logger_str) {
+                logger = gf_check_logger (logger_str);
+                gf_log_set_logger (logger);
+        }
+
+        GF_OPTION_INIT ("log-format", log_format_str, str, out);
+        if (log_format_str) {
+                log_format = gf_check_log_format (log_format_str);
+                gf_log_set_logformat (log_format);
+        }
+
+
         this->private = conf;
         ret = 0;
 out:
@@ -2773,10 +2855,11 @@ notify (xlator_t *this, int32_t event, void *data, ...)
         struct ios_dump_args args = {0};
         dict_t       *output = NULL;
         dict_t       *dict = NULL;
-        int32_t       top_op = 0;
+        int32_t       op = 0;
         int32_t       list_cnt = 0;
         double        throughput = 0;
         double        time = 0;
+        gf_boolean_t  is_peek = _gf_false;
         va_list ap;
 
         dict = data;
@@ -2787,7 +2870,7 @@ notify (xlator_t *this, int32_t event, void *data, ...)
         case GF_EVENT_TRANSLATOR_INFO:
                 ret = dict_get_str_boolean (dict, "clear-stats", _gf_false);
                 if (ret) {
-                         ret = dict_set_int32 (output, "top-op", top_op);
+                        ret = dict_set_int32 (output, "top-op", op);
                         if (ret) {
                                 gf_log (this->name, GF_LOG_ERROR,
                                         "Failed to set top-op in dict");
@@ -2807,15 +2890,15 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                         goto out;
                 }
 
-                ret = dict_get_int32 (dict, "top-op", &top_op);
+                ret = dict_get_int32 (dict, "top-op", &op);
                 if (!ret) {
                         ret = dict_get_int32 (dict, "list-cnt", &list_cnt);
-                        if (top_op > IOS_STATS_TYPE_NONE &&
-                            top_op < IOS_STATS_TYPE_MAX)
+                        if (op > IOS_STATS_TYPE_NONE &&
+                            op < IOS_STATS_TYPE_MAX)
                                 ret = io_stats_dump_stats_to_dict (this, output,
-                                                             top_op, list_cnt);
-                        if (top_op == IOS_STATS_TYPE_READ_THROUGHPUT ||
-                                top_op == IOS_STATS_TYPE_WRITE_THROUGHPUT) {
+                                                             op, list_cnt);
+                        if (op == IOS_STATS_TYPE_READ_THROUGHPUT ||
+                                op == IOS_STATS_TYPE_WRITE_THROUGHPUT) {
                                 ret = dict_get_double (dict, "throughput",
                                                         &throughput);
                                 if (!ret) {
@@ -2836,9 +2919,41 @@ notify (xlator_t *this, int32_t event, void *data, ...)
 
                         }
                 } else {
-                        (void) ios_dump_args_init (&args, IOS_DUMP_TYPE_DICT,
-                                           output);
-                        ret = io_stats_dump (this, &args);
+                        ret = dict_get_int32 (dict, "info-op", &op);
+                        if (ret || op < GF_CLI_INFO_ALL ||
+                            GF_CLI_INFO_CLEAR < op)
+                            op = GF_CLI_INFO_ALL;
+
+                        ret = dict_set_int32 (output, "info-op", op);
+                        if (ret) {
+                                gf_log (this->name, GF_LOG_ERROR,
+                                        "Failed to set info-op in dict");
+                                goto out;
+                        }
+
+                        if (GF_CLI_INFO_CLEAR == op) {
+                                ret = io_stats_clear (this->private);
+                                if (ret)
+                                        gf_log (this->name, GF_LOG_ERROR,
+                                                "Failed to clear info stats");
+
+                                ret = dict_set_int32 (output, "stats-cleared",
+                                              ret ? 0 : 1);
+                                if (ret)
+                                        gf_log (this->name, GF_LOG_ERROR,
+                                                "Failed to set stats-cleared"
+                                                " in dict");
+                        }
+                        else {
+                                ret = dict_get_str_boolean (dict, "peek",
+                                                            _gf_false);
+                                if (-1 != ret)
+                                        is_peek = ret;
+
+                                (void) ios_dump_args_init (&args,
+                                                IOS_DUMP_TYPE_DICT, output);
+                                ret = io_stats_dump (this, &args, op, is_peek);
+                        }
                 }
                 break;
         default:
@@ -2944,6 +3059,40 @@ struct volume_options options[] = {
           .description = "Changes the log-level of the bricks",
           .value = { "DEBUG", "WARNING", "ERROR", "INFO",
                      "CRITICAL", "NONE", "TRACE"}
+        },
+        { .key = {"logger"},
+          .type = GF_OPTION_TYPE_STR,
+          .value = { GF_LOGGER_GLUSTER_LOG, GF_LOGGER_SYSLOG}
+        },
+        { .key = {"client-logger"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = GF_LOGGER_GLUSTER_LOG,
+          .description = "Changes the logging sub-system to log to, for the "
+                         "clients",
+          .value = { GF_LOGGER_GLUSTER_LOG, GF_LOGGER_SYSLOG}
+        },
+        { .key = {"brick-logger"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = GF_LOGGER_GLUSTER_LOG,
+          .description = "Changes the logging sub-system to log to, for the "
+                         "bricks",
+          .value = { GF_LOGGER_GLUSTER_LOG, GF_LOGGER_SYSLOG}
+        },
+        { .key = {"log-format"},
+          .type = GF_OPTION_TYPE_STR,
+          .value = { GF_LOG_FORMAT_NO_MSG_ID, GF_LOG_FORMAT_WITH_MSG_ID}
+        },
+        { .key = {"client-log-format"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = GF_LOG_FORMAT_WITH_MSG_ID,
+          .description = "Changes log format for the clients",
+          .value = { GF_LOG_FORMAT_NO_MSG_ID, GF_LOG_FORMAT_WITH_MSG_ID}
+        },
+        { .key = {"brick-log-format"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = GF_LOG_FORMAT_WITH_MSG_ID,
+          .description = "Changes the log format for the bricks",
+          .value = { GF_LOG_FORMAT_NO_MSG_ID, GF_LOG_FORMAT_WITH_MSG_ID}
         },
         { .key  = {NULL} },
 

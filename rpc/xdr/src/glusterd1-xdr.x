@@ -125,3 +125,94 @@ struct gd1_mgmt_brick_op_rsp {
         opaque  output<>;
         string  op_errstr<>;
 } ;
+
+struct gd1_mgmt_v3_lock_req {
+        unsigned char  uuid[16];
+        unsigned char  txn_id[16];
+        int            op;
+        opaque         dict<>;
+}  ;
+
+struct gd1_mgmt_v3_lock_rsp {
+        unsigned char  uuid[16];
+        unsigned char  txn_id[16];
+        opaque         dict<>;
+        int            op_ret;
+        int            op_errno;
+}  ;
+
+struct gd1_mgmt_v3_pre_val_req {
+        unsigned char  uuid[16];
+        int     op;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_pre_val_rsp {
+        unsigned char  uuid[16];
+        int     op;
+        int     op_ret;
+        int     op_errno;
+        string  op_errstr<>;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_brick_op_req {
+        unsigned char  uuid[16];
+        int     op;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_brick_op_rsp {
+        unsigned char  uuid[16];
+        int     op;
+        int     op_ret;
+        int     op_errno;
+        string  op_errstr<>;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_commit_req {
+        unsigned char  uuid[16];
+        int     op;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_commit_rsp {
+        unsigned char  uuid[16];
+        int     op;
+        int     op_ret;
+        int     op_errno;
+        opaque  dict<>;
+        string  op_errstr<>;
+}  ;
+
+struct gd1_mgmt_v3_post_val_req {
+        unsigned char  uuid[16];
+        int     op;
+        int     op_ret;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_post_val_rsp {
+        unsigned char  uuid[16];
+        int     op;
+        int     op_ret;
+        int     op_errno;
+        string  op_errstr<>;
+        opaque  dict<>;
+}  ;
+
+struct gd1_mgmt_v3_unlock_req {
+        unsigned char  uuid[16];
+        unsigned char  txn_id[16];
+        int            op;
+        opaque         dict<>;
+}  ;
+
+struct gd1_mgmt_v3_unlock_rsp {
+        unsigned char  uuid[16];
+        unsigned char  txn_id[16];
+        opaque         dict<>;
+        int            op_ret;
+        int            op_errno;
+}  ;

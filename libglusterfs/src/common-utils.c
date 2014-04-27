@@ -31,7 +31,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
-#include <stdlib.h>
+#include <assert.h>
 
 #if defined GF_BSD_HOST_OS || defined GF_DARWIN_HOST_OS
 #include <sys/sysctl.h>
@@ -281,26 +281,37 @@ err:
 
 struct xldump {
 	int lineno;
-	FILE *logfp;
 };
 
-
+/* to catch any format discrepencies that may arise in code */
+static int nprintf (struct xldump *dump, const char *fmt, ...)
+                    __attribute__ ((__format__ (__printf__, 2, 3)));
 static int
 nprintf (struct xldump *dump, const char *fmt, ...)
 {
-	va_list ap;
-	int ret = 0;
+        va_list  ap;
+        char    *msg = NULL;
+        char     header[32];
+        int      ret = 0;
 
+        ret = snprintf (header, 32, "%3d:", ++dump->lineno);
+        if (ret < 0)
+                goto out;
 
-	ret += fprintf (dump->logfp, "%3d: ", ++dump->lineno);
+        va_start (ap, fmt);
+        ret = vasprintf (&msg, fmt, ap);
+        va_end (ap);
+        if (-1 == ret)
+                goto out;
 
-	va_start (ap, fmt);
-	ret += vfprintf (dump->logfp, fmt, ap);
-	va_end (ap);
+        /* NOTE: No ret value from gf_msg_plain, so unable to compute printed
+         * characters. The return value from nprintf is not used, so for now
+         * living with it */
+        gf_msg_plain (GF_LOG_WARNING, "%s %s", header, msg);
 
-	ret += fprintf (dump->logfp, "\n");
-
-	return ret;
+out:
+        FREE (msg);
+        return 0;
 }
 
 
@@ -349,175 +360,125 @@ xldump (xlator_t *each, void *d)
 	xldump_subvolumes (each, d);
 
 	nprintf (d, "end-volume");
-	nprintf (d, "");
+	nprintf (d, " ");
 }
 
 
 void
 gf_log_dump_graph (FILE *specfp, glusterfs_graph_t *graph)
 {
-        glusterfs_ctx_t *ctx;
 	struct xldump xld = {0, };
 
-
-        ctx = THIS->ctx;
-	xld.logfp = ctx->log.gf_log_logfile;
-
-        fprintf (ctx->log.gf_log_logfile, "Final graph:\n");
-        fprintf (ctx->log.gf_log_logfile,
-                 "+---------------------------------------"
-                 "---------------------------------------+\n");
+        gf_msg_plain (GF_LOG_WARNING, "Final graph:");
+        gf_msg_plain (GF_LOG_WARNING,
+                      "+---------------------------------------"
+                      "---------------------------------------+");
 
 	xlator_foreach_depth_first (graph->top, xldump, &xld);
 
-        fprintf (ctx->log.gf_log_logfile,
-                 "+---------------------------------------"
-                 "---------------------------------------+\n");
-        fflush (ctx->log.gf_log_logfile);
+        gf_msg_plain (GF_LOG_WARNING,
+                      "+---------------------------------------"
+                      "---------------------------------------+");
 }
 
 static void
-gf_dump_config_flags (int fd)
+gf_dump_config_flags ()
 {
-        int ret = 0;
-
-        ret = write (fd, "configuration details:\n", 23);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "configuration details:");
 
 /* have argp */
 #ifdef HAVE_ARGP
-        ret = write (fd, "argp 1\n", 7);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "argp 1");
 #endif
 
 /* ifdef if found backtrace */
 #ifdef HAVE_BACKTRACE
-        ret = write (fd, "backtrace 1\n", 12);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "backtrace 1");
 #endif
 
 /* Berkeley-DB version has cursor->get() */
 #ifdef HAVE_BDB_CURSOR_GET
-        ret = write (fd, "bdb->cursor->get 1\n", 19);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "bdb->cursor->get 1");
 #endif
 
 /* Define to 1 if you have the <db.h> header file. */
 #ifdef HAVE_DB_H
-        ret = write (fd, "db.h 1\n", 7);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "db.h 1");
 #endif
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #ifdef HAVE_DLFCN_H
-        ret = write (fd, "dlfcn 1\n", 8);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "dlfcn 1");
 #endif
 
 /* define if fdatasync exists */
 #ifdef HAVE_FDATASYNC
-        ret = write (fd, "fdatasync 1\n", 12);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "fdatasync 1");
 #endif
 
 /* Define to 1 if you have the `pthread' library (-lpthread). */
 #ifdef HAVE_LIBPTHREAD
-        ret = write (fd, "libpthread 1\n", 13);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "libpthread 1");
 #endif
 
 /* define if llistxattr exists */
 #ifdef HAVE_LLISTXATTR
-        ret = write (fd, "llistxattr 1\n", 13);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "llistxattr 1");
 #endif
 
 /* define if found setfsuid setfsgid */
 #ifdef HAVE_SET_FSID
-        ret = write (fd, "setfsid 1\n", 10);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "setfsid 1");
 #endif
 
 /* define if found spinlock */
 #ifdef HAVE_SPINLOCK
-        ret = write (fd, "spinlock 1\n", 11);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "spinlock 1");
 #endif
 
 /* Define to 1 if you have the <sys/epoll.h> header file. */
 #ifdef HAVE_SYS_EPOLL_H
-        ret = write (fd, "epoll.h 1\n", 10);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "epoll.h 1");
 #endif
 
 /* Define to 1 if you have the <sys/extattr.h> header file. */
 #ifdef HAVE_SYS_EXTATTR_H
-        ret = write (fd, "extattr.h 1\n", 12);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "extattr.h 1");
 #endif
 
 /* Define to 1 if you have the <sys/xattr.h> header file. */
 #ifdef HAVE_SYS_XATTR_H
-        ret = write (fd, "xattr.h 1\n", 10);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "xattr.h 1");
 #endif
 
 /* define if found st_atim.tv_nsec */
 #ifdef HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC
-        ret = write (fd, "st_atim.tv_nsec 1\n", 18);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "st_atim.tv_nsec 1");
 #endif
 
 /* define if found st_atimespec.tv_nsec */
 #ifdef HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC
-        ret = write (fd, "st_atimespec.tv_nsec 1\n",23);
-        if (ret == -1)
-                goto out;
+        gf_msg_plain_nomem (GF_LOG_ALERT, "st_atimespec.tv_nsec 1");
 #endif
 
 /* Define to the full name and version of this package. */
 #ifdef PACKAGE_STRING
         {
                 char msg[128];
-                sprintf (msg, "package-string: %s\n", PACKAGE_STRING);
-                ret = write (fd, msg, strlen (msg));
-                if (ret == -1)
-                        goto out;
+                sprintf (msg, "package-string: %s", PACKAGE_STRING);
+                gf_msg_plain_nomem (GF_LOG_ALERT, msg);
         }
 #endif
 
-out:
         return;
 }
 
-/* Obtain a backtrace and print it to stdout. */
-/* TODO: It looks like backtrace_symbols allocates memory,
-   it may be problem because mostly memory allocation/free causes 'sigsegv' */
-
+/* Obtain a backtrace and print it to the log */
 void
 gf_print_trace (int32_t signum, glusterfs_ctx_t *ctx)
 {
         char         msg[1024] = {0,};
         char         timestr[64] = {0,};
-        int          ret = 0;
-        int          fd = 0;
-
-        fd = fileno (ctx->log.gf_log_logfile);
 
         /* Now every gf_log call will just write to a buffer and when the
          * buffer becomes full, its written to the log-file. Suppose the process
@@ -526,75 +487,51 @@ gf_print_trace (int32_t signum, glusterfs_ctx_t *ctx)
          * contents of the buffer to the log file before printing the backtrace
          * which helps in debugging.
          */
-        fflush (ctx->log.gf_log_logfile);
+        gf_log_flush();
         /* Pending frames, (if any), list them in order */
-        ret = write (fd, "pending frames:\n", 16);
-        if (ret < 0)
-                goto out;
-
+        gf_msg_plain_nomem (GF_LOG_ALERT, "pending frames:");
         {
-                struct list_head *trav = ((call_pool_t *)ctx->pool)->all_frames.next;
+                struct list_head *trav =
+                                ((call_pool_t *)ctx->pool)->all_frames.next;
                 while (trav != (&((call_pool_t *)ctx->pool)->all_frames)) {
-                        call_frame_t *tmp = (call_frame_t *)(&((call_stack_t *)trav)->frames);
+                        call_frame_t *tmp =
+                                (call_frame_t *)(&((call_stack_t *)trav)->frames);
                         if (tmp->root->type == GF_OP_TYPE_FOP)
-                                sprintf (msg,"frame : type(%d) op(%s)\n",
+                                sprintf (msg,"frame : type(%d) op(%s)",
                                          tmp->root->type,
                                          gf_fop_list[tmp->root->op]);
                         else
-                                sprintf (msg,"frame : type(%d) op(%d)\n",
+                                sprintf (msg,"frame : type(%d) op(%d)",
                                          tmp->root->type,
                                          tmp->root->op);
 
-                        ret = write (fd, msg, strlen (msg));
-                        if (ret < 0)
-                                goto out;
+                        gf_msg_plain_nomem (GF_LOG_ALERT, msg);
 
                         trav = trav->next;
                 }
-                ret = write (fd, "\n", 1);
-                if (ret < 0)
-                        goto out;
         }
 
-        sprintf (msg, "patchset: %s\n", GLUSTERFS_REPOSITORY_REVISION);
-        ret = write (fd, msg, strlen (msg));
-        if (ret < 0)
-                goto out;
+        sprintf (msg, "patchset: %s", GLUSTERFS_REPOSITORY_REVISION);
+        gf_msg_plain_nomem (GF_LOG_ALERT, msg);
 
-        sprintf (msg, "signal received: %d\n", signum);
-        ret = write (fd, msg, strlen (msg));
-        if (ret < 0)
-                goto out;
-
+        sprintf (msg, "signal received: %d", signum);
+        gf_msg_plain_nomem (GF_LOG_ALERT, msg);
         {
                 /* Dump the timestamp of the crash too, so the previous logs
                    can be related */
-                gf_time_fmt (timestr, sizeof timestr, time (NULL), gf_timefmt_FT);
-                ret = write (fd, "time of crash: ", 15);
-                if (ret < 0)
-                        goto out;
-                ret = write (fd, timestr, strlen (timestr));
-                if (ret < 0)
-                        goto out;
+                gf_time_fmt (timestr, sizeof timestr, time (NULL),
+                             gf_timefmt_FT);
+                gf_msg_plain_nomem (GF_LOG_ALERT, "time of crash: ");
+                gf_msg_plain_nomem (GF_LOG_ALERT, timestr);
         }
 
-        gf_dump_config_flags (fd);
+        gf_dump_config_flags ();
 #if HAVE_BACKTRACE
-        /* Print 'backtrace' */
-        {
-                void *array[200];
-                size_t size;
-
-                size = backtrace (array, 200);
-                backtrace_symbols_fd (&array[1], size-1, fd);
-                sprintf (msg, "---------\n");
-                ret = write (fd, msg, strlen (msg));
-                if (ret < 0)
-                        goto out;
-        }
+        gf_msg_backtrace_nomem (GF_LOG_ALERT, 200);
+        sprintf (msg, "---------");
+        gf_msg_plain_nomem (GF_LOG_ALERT, msg);
 #endif /* HAVE_BACKTRACE */
 
-out:
         /* Send a signal to terminate the process */
         signal (signum, SIG_DFL);
         raise (signum);
@@ -787,12 +724,44 @@ gf_string2time (const char *str, uint32_t *n)
         if (errno == 0)
                 errno = old_errno;
 
-        if (!((tail[0] == '\0') ||
+        if (((tail[0] == '\0') ||
               ((tail[0] == 's') && (tail[1] == '\0')) ||
               ((tail[0] == 's') && (tail[1] == 'e') &&
 	       (tail[2] == 'c') && (tail[3] == '\0'))))
-                return -1;
+               goto out;
 
+        else if (((tail[0] == 'm') && (tail[1] == '\0')) ||
+                 ((tail[0] == 'm') && (tail[1] == 'i') &&
+                  (tail[2] == 'n') && (tail[3] == '\0'))) {
+                value = value * GF_MINUTE_IN_SECONDS;
+                goto out;
+        }
+
+        else if (((tail[0] == 'h') && (tail[1] == '\0')) ||
+                 ((tail[0] == 'h') && (tail[1] == 'r') &&
+	         (tail[2] == '\0'))) {
+                value = value * GF_HOUR_IN_SECONDS;
+                goto out;
+        }
+
+        else if (((tail[0] == 'd') && (tail[1] == '\0')) ||
+                 ((tail[0] == 'd') && (tail[1] == 'a') &&
+	         (tail[2] == 'y') && (tail[3] == 's') &&
+                 (tail[4] == '\0'))) {
+                value = value * GF_DAY_IN_SECONDS;
+                goto out;
+        }
+
+        else if (((tail[0] == 'w') && (tail[1] == '\0')) ||
+                 ((tail[0] == 'w') && (tail[1] == 'k') &&
+	         (tail[2] == '\0'))) {
+                value = value * GF_WEEK_IN_SECONDS;
+                goto out;
+        } else {
+                return -1;
+        }
+
+out:
         *n = value;
 
         return 0;
@@ -1201,7 +1170,7 @@ gf_string2uint8 (const char *str, uint8_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT8_MAX) {
+        if (l <= UINT8_MAX) {
                 *n = (uint8_t) l;
                 return 0;
         }
@@ -1220,7 +1189,7 @@ gf_string2uint16 (const char *str, uint16_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT16_MAX) {
+        if (l <= UINT16_MAX) {
                 *n = (uint16_t) l;
                 return 0;
         }
@@ -1239,7 +1208,7 @@ gf_string2uint32 (const char *str, uint32_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT32_MAX) {
+	if (l <= UINT32_MAX) {
                 *n = (uint32_t) l;
                 return 0;
         }
@@ -1258,7 +1227,7 @@ gf_string2uint64 (const char *str, uint64_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT64_MAX) {
+        if (l <= UINT64_MAX) {
                 *n = (uint64_t) l;
                 return 0;
         }
@@ -1289,7 +1258,7 @@ gf_string2uint8_base10 (const char *str, uint8_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT8_MAX) {
+        if (l <= UINT8_MAX) {
                 *n = (uint8_t) l;
                 return 0;
         }
@@ -1308,7 +1277,7 @@ gf_string2uint16_base10 (const char *str, uint16_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT16_MAX) {
+        if (l <= UINT16_MAX) {
                 *n = (uint16_t) l;
                 return 0;
         }
@@ -1327,7 +1296,7 @@ gf_string2uint32_base10 (const char *str, uint32_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT32_MAX) {
+        if (l <= UINT32_MAX) {
                 *n = (uint32_t) l;
                 return 0;
         }
@@ -1346,7 +1315,7 @@ gf_string2uint64_base10 (const char *str, uint64_t *n)
         if (rv != 0)
                 return rv;
 
-        if (l >= 0 && l <= UINT64_MAX) {
+        if (l <= UINT64_MAX) {
                 *n = (uint64_t) l;
                 return 0;
         }
@@ -1392,7 +1361,7 @@ err:
 }
 
 int
-gf_string2bytesize (const char *str, uint64_t *n)
+gf_string2bytesize_range (const char *str, uint64_t *n, uint64_t max)
 {
         double value = 0.0;
         char *tail = NULL;
@@ -1441,7 +1410,7 @@ gf_string2bytesize (const char *str, uint64_t *n)
                         return -1;
         }
 
-        if ((UINT64_MAX - value) < 0) {
+        if ((max - value) < 0) {
                 errno = ERANGE;
                 return -1;
         }
@@ -1449,6 +1418,28 @@ gf_string2bytesize (const char *str, uint64_t *n)
         *n = (uint64_t) value;
 
         return 0;
+}
+
+int
+gf_string2bytesize_size (const char *str, size_t *n)
+{
+        uint64_t u64;
+        size_t max = (size_t) - 1;
+        int val = gf_string2bytesize_range (str, &u64, max);
+        *n = (size_t) u64;
+        return val;
+}
+
+int
+gf_string2bytesize (const char *str, uint64_t *n)
+{
+        return gf_string2bytesize_range(str, n, UINT64_MAX);
+}
+
+int
+gf_string2bytesize_uint64 (const char *str, uint64_t *n)
+{
+        return gf_string2bytesize_range(str, n, UINT64_MAX);
 }
 
 int
@@ -1889,6 +1880,70 @@ out:
         return ret;
 }
 
+/**
+ * valid_ipv4_subnetwork() takes the pattern and checks if it contains
+ * a valid ipv4 subnetwork pattern i.e. xx.xx.xx.xx/n. IPv4 address
+ * part (xx.xx.xx.xx) and mask bits lengh part (n). The mask bits lengh
+ * must be in 0-32 range (ipv4 addr is 32 bit). The pattern must be
+ * in this format.
+ *
+ * Returns _gf_true if both IP addr and mask bits len are valid
+ *         _gf_false otherwise.
+ */
+gf_boolean_t
+valid_ipv4_subnetwork (const char *address)
+{
+        char         *slash     = NULL;
+        char         *paddr     = NULL;
+        char         *endptr    = NULL;
+        long         prefixlen  = -1;
+        gf_boolean_t retv       = _gf_true;
+
+        if (address == NULL) {
+                gf_log_callingfn (THIS->name, GF_LOG_WARNING,
+                                              "argument invalid");
+                return _gf_false;
+        }
+
+        paddr = gf_strdup (address);
+        if (paddr == NULL) /* ENOMEM */
+                return _gf_false;
+
+        /*
+         * INVALID: If '/' is not present OR
+         *          Nothing specified after '/'
+         */
+        slash = strchr(paddr, '/');
+        if ((slash == NULL) || (slash[1] == '\0')) {
+                gf_log_callingfn (THIS->name, GF_LOG_WARNING,
+                                  "Invalid IPv4 subnetwork format");
+                retv = _gf_false;
+                goto out;
+        }
+
+        *slash = '\0';
+        retv = valid_ipv4_address (paddr, strlen(paddr), _gf_false);
+        if (retv == _gf_false) {
+                gf_log_callingfn (THIS->name, GF_LOG_WARNING,
+                                  "Invalid IPv4 subnetwork address");
+                goto out;
+        }
+
+        prefixlen = strtol (slash + 1, &endptr, 10);
+        if ((errno != 0) || (*endptr != '\0') ||
+            (prefixlen < 0) || (prefixlen > 32)) {
+                gf_log_callingfn (THIS->name, GF_LOG_WARNING,
+                                  "Invalid IPv4 subnetwork mask");
+                retv = _gf_false;
+                goto out;
+        }
+
+        retv = _gf_true;
+out:
+        GF_FREE (paddr);
+        return retv;
+}
+
 char
 valid_ipv6_address (char *address, int length, gf_boolean_t wildcard_acc)
 {
@@ -1967,6 +2022,65 @@ valid_internet_address (char *address, gf_boolean_t wildcard_acc)
 
 out:
         return ret;
+}
+
+/**
+ * valid_mount_auth_address - Validate the rpc-auth.addr.allow/reject pattern
+ *
+ * @param address - Pattern to be validated
+ *
+ * @return _gf_true if "address" is "*" (anonymous) 'OR'
+ *                  if "address" is valid FQDN or valid IPv4/6 address 'OR'
+ *                  if "address" contains wildcard chars e.g. "'*' or '?' or '['"
+ *                  if "address" is valid ipv4 subnet pattern (xx.xx.xx.xx/n)
+ *         _gf_false otherwise
+ *
+ *
+ * NB: If the user/admin set for wildcard pattern, then it does not have
+ *     to be validated. Make it similar to the way exportfs (kNFS) works.
+ */
+gf_boolean_t
+valid_mount_auth_address (char *address)
+{
+        int    length = 0;
+        char   *cp    = NULL;
+
+        /* 1. Check for "NULL and empty string */
+        if ((address == NULL) || (address[0] == '\0')){
+                gf_log_callingfn (THIS->name,
+                                  GF_LOG_WARNING, "argument invalid");
+                return _gf_false;
+        }
+
+        /* 2. Check for Anonymous */
+        if (strcmp(address, "*") == 0)
+                return _gf_true;
+
+        for (cp = address; *cp; cp++) {
+                /* 3. Check for wildcard pattern */
+                if (*cp == '*' || *cp == '?' || *cp == '[') {
+                        return _gf_true;
+                }
+
+                /*
+                 * 4. check for IPv4 subnetwork i.e. xx.xx.xx.xx/n
+                 * TODO: check for IPv6 subnetwork
+                 * NB: Wildcard must not be mixed with subnetwork.
+                 */
+                if (*cp == '/') {
+                        return valid_ipv4_subnetwork (address);
+                }
+        }
+
+        /* 5. Check for v4/v6 IP addr and FQDN/hostname */
+        length = strlen (address);
+        if ((valid_ipv4_address (address, length, _gf_false)) ||
+            (valid_ipv6_address (address, length, _gf_false)) ||
+            (valid_host_name (address, length))) {
+                return _gf_true;
+        }
+
+        return _gf_false;
 }
 
 /**
@@ -2294,6 +2408,9 @@ gf_canonicalize_path (char *path)
         if (!path || *path != '/')
                 goto out;
 
+        if (!strcmp (path, "/"))
+                return 0;
+
         tmppath = gf_strdup (path);
         if (!tmppath)
                 goto out;
@@ -2328,14 +2445,16 @@ static const char *__gf_timefmts[] = {
         "%F %T",
         "%Y/%m/%d-%T",
         "%b %d %T",
-        "%F %H%M%S"
+        "%F %H%M%S",
+	"%Y-%m-%d-%T",
 };
 
 static const char *__gf_zerotimes[] = {
         "0000-00-00 00:00:00",
         "0000/00/00-00:00:00",
         "xxx 00 00:00:00",
-        "0000-00-00 000000"
+        "0000-00-00 000000",
+	"0000-00-00-00:00:00",
 };
 
 void
@@ -2690,7 +2809,7 @@ get_ip_from_addrinfo (struct addrinfo *addr, char **ip)
                 return NULL;
         }
 
-        *ip = strdup (buf);
+        *ip = gf_strdup (buf);
         return *ip;
 }
 
@@ -2756,8 +2875,11 @@ gf_is_local_addr (char *hostname)
 
                 found = gf_is_loopback_localhost (res->ai_addr, hostname)
                         || gf_interface_search (ip);
-                if (found)
+                if (found) {
+                        GF_FREE (ip);
                         goto out;
+                }
+                GF_FREE (ip);
         }
 
 out:
@@ -2817,7 +2939,6 @@ out:
         return ret;
 
 }
-
 
 /* Sets log file path from user provided arguments */
 int
@@ -2882,6 +3003,42 @@ done:
 }
 
 int
+gf_set_log_ident (cmd_args_t *cmd_args)
+{
+        int              ret = 0;
+        char            *ptr = NULL;
+
+        if (cmd_args->log_file == NULL) {
+                /* no ident source */
+                return 0;
+        }
+
+        /* TODO: Some idents would look like, etc-glusterfs-glusterd.vol, which
+         * seems ugly and can be bettered? */
+        /* just get the filename as the ident */
+        if (NULL != (ptr = strrchr (cmd_args->log_file, '/'))) {
+                ret = gf_asprintf (&cmd_args->log_ident, "%s", ptr + 1);
+        } else {
+                ret = gf_asprintf (&cmd_args->log_ident, "%s",
+                                   cmd_args->log_file);
+        }
+
+        if (ret > 0)
+                ret = 0;
+        else
+                return ret;
+
+        /* remove .log suffix */
+        if (NULL != (ptr = strrchr (cmd_args->log_ident, '.'))) {
+                if (strcmp (ptr, ".log") == 0) {
+                        ptr[0] = '\0';
+                }
+        }
+
+        return ret;
+}
+
+int
 gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
 		  void *(*start_routine)(void *), void *arg)
 {
@@ -2905,4 +3062,171 @@ gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
 	pthread_sigmask (SIG_SETMASK, &old, NULL);
 
 	return ret;
+}
+
+#ifdef __NetBSD__
+#ifdef __MACHINE_STACK_GROWS_UP
+#define BELOW >
+#else
+#define BELOW <
+#endif
+
+struct frameinfo {
+	struct frameinfo *next;
+	void *return_address;
+};
+
+size_t
+backtrace(void **trace, size_t len)
+{
+	const struct frameinfo *frame = __builtin_frame_address(0);
+	void *stack = &stack;
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		if ((void *)frame BELOW stack)
+			return i;
+		trace[i] = frame->return_address;
+		frame = frame->next;
+	}
+
+	return len;
+}
+
+char **
+backtrace_symbols(void *const *trace, size_t len)
+{
+	static const size_t slen = sizeof("0x123456789abcdef");
+	char **ptr = calloc(len, sizeof(*ptr) + slen);
+	size_t i;
+
+	if (ptr == NULL)
+		return NULL;
+
+	char *str = (void *)(ptr + len);
+	size_t cur = 0, left = len * slen;
+
+	for (i = 0; i < len; i++) {
+		ptr[i] = str + cur;
+		cur += snprintf(str + cur, left - cur, "%p", trace[i]) + 1;
+		assert(cur < left);
+	}
+
+	return ptr;
+}
+#undef BELOW
+#endif /* __NetBSD__ */
+
+int
+gf_skip_header_section (int fd, int header_len)
+{
+        int  ret           = -1;
+
+        ret = lseek (fd, header_len, SEEK_SET);
+        if (ret == (off_t) -1) {
+                gf_log ("", GF_LOG_ERROR, "Failed to skip header "
+                        "section");
+        } else {
+                ret = 0;
+        }
+
+        return ret;
+}
+
+gf_boolean_t
+gf_is_service_running (char *pidfile, int *pid)
+{
+        FILE            *file = NULL;
+        gf_boolean_t    running = _gf_false;
+        int             ret = 0;
+        int             fno = 0;
+
+        file = fopen (pidfile, "r+");
+        if (!file)
+                goto out;
+
+        fno = fileno (file);
+        ret = lockf (fno, F_TEST, 0);
+        if (ret == -1)
+                running = _gf_true;
+        if (!pid)
+                goto out;
+
+        ret = fscanf (file, "%d", pid);
+        if (ret <= 0) {
+                gf_log ("", GF_LOG_ERROR, "Unable to read pidfile: %s, %s",
+                        pidfile, strerror (errno));
+                *pid = -1;
+        }
+
+out:
+        if (file)
+                fclose (file);
+        return running;
+}
+
+static inline int
+dht_is_linkfile_key (dict_t *this, char *key, data_t *value, void *data)
+{
+        gf_boolean_t *linkfile_key_found = NULL;
+
+        if (!data)
+                goto out;
+
+        linkfile_key_found = data;
+
+        *linkfile_key_found = _gf_true;
+out:
+        return 0;
+}
+
+
+inline gf_boolean_t
+dht_is_linkfile (struct iatt *buf, dict_t *dict)
+{
+        gf_boolean_t linkfile_key_found = _gf_false;
+
+        if (!IS_DHT_LINKFILE_MODE (buf))
+                return _gf_false;
+
+        dict_foreach_fnmatch (dict, "*."DHT_LINKFILE_STR, dht_is_linkfile_key,
+                              &linkfile_key_found);
+
+        return linkfile_key_found;
+}
+
+int
+gf_check_log_format (const char *value)
+{
+        int log_format = -1;
+
+        if (!strcasecmp (value, GF_LOG_FORMAT_NO_MSG_ID))
+                log_format = gf_logformat_traditional;
+        else if (!strcasecmp (value, GF_LOG_FORMAT_WITH_MSG_ID))
+                log_format = gf_logformat_withmsgid;
+
+        if (log_format == -1)
+                gf_log (THIS->name, GF_LOG_ERROR, "Invalid log-format. "
+                        "possible values are "
+                        GF_LOG_FORMAT_NO_MSG_ID "|" GF_LOG_FORMAT_WITH_MSG_ID);
+
+        return log_format;
+}
+
+int
+gf_check_logger (const char *value)
+{
+        int logger = -1;
+
+        if (!strcasecmp (value, GF_LOGGER_GLUSTER_LOG))
+                logger = gf_logger_glusterlog;
+        else if (!strcasecmp (value, GF_LOGGER_SYSLOG))
+                logger = gf_logger_syslog;
+
+        if (logger == -1)
+                gf_log (THIS->name, GF_LOG_ERROR, "Invalid logger. "
+                        "possible values are "
+                        GF_LOGGER_GLUSTER_LOG "|" GF_LOGGER_SYSLOG);
+
+        return logger;
 }

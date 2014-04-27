@@ -13,6 +13,7 @@
 #include "stripe.h"
 #include "byte-order.h"
 #include "mem-types.h"
+#include "logging.h"
 
 void
 stripe_local_wipe (stripe_local_t *local)
@@ -223,6 +224,7 @@ stripe_fill_lockinfo_xattr (xlator_t *this, stripe_local_t *local,
                 if (ret < 0) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "dict_serialize failed (%s)", strerror (-ret));
+                        GF_FREE(buf);
                         ret = -1;
                         goto out;
                 }
@@ -259,8 +261,8 @@ stripe_fill_pathinfo_xattr (xlator_t *this, stripe_local_t *local,
                 goto out;
         }
 
-        (void) snprintf (stripe_size_str, 20, "%ld",
-                         (local->fctx) ? local->fctx->stripe_size : 0);
+        (void) snprintf (stripe_size_str, 20, "%"PRId64,
+                         (long long) (local->fctx) ? local->fctx->stripe_size : 0);
 
         /* extra bytes for decorations (brackets and <>'s) */
         padding = strlen (this->name) + strlen (STRIPE_PATHINFO_HEADER)
@@ -280,6 +282,7 @@ stripe_fill_pathinfo_xattr (xlator_t *this, stripe_local_t *local,
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "Cannot aggregate pathinfo list");
+                GF_FREE(pathinfo_serz);
                 goto out;
         }
 
@@ -502,7 +505,7 @@ set_default_block_size (stripe_private_t *priv, char *num)
         GF_VALIDATE_OR_GOTO (THIS->name, num, out);
 
 
-        if (gf_string2bytesize (num, &priv->block_size) != 0) {
+        if (gf_string2bytesize_uint64 (num, &priv->block_size) != 0) {
                 gf_log (THIS->name, GF_LOG_ERROR,
                         "invalid number format \"%s\"", num);
                 goto out;
@@ -552,7 +555,7 @@ set_stripe_block_size (xlator_t *this, stripe_private_t *priv, char *data)
                         if (ret)
                                 goto out;
                 }
-                if (gf_string2bytesize (num, &stripe_opt->block_size) != 0) {
+                if (gf_string2bytesize_uint64 (num, &stripe_opt->block_size) != 0) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "invalid number format \"%s\"", num);
                         goto out;
@@ -672,4 +675,3 @@ uncoalesced_size(off_t size, uint64_t stripe_size, int stripe_count,
 
         return size;
 }
-

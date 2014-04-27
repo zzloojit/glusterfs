@@ -125,7 +125,7 @@ typedef struct changelog_notify {
         pthread_t notify_th;
 
         /* unique socket path */
-        char sockpath[PATH_MAX];
+        char sockpath[UNIX_PATH_MAX];
 
         int socket_fd;
 
@@ -225,6 +225,7 @@ typedef struct changelog_inode_ctx {
 typedef enum {
         CHANGELOG_OPT_REC_FOP,
         CHANGELOG_OPT_REC_ENTRY,
+        CHANGELOG_OPT_REC_UINT32,
 } changelog_optional_rec_type_t;
 
 struct changelog_entry_fields {
@@ -253,7 +254,8 @@ typedef struct {
         size_t co_len;
 
         union {
-                glusterfs_fop_t co_fop;
+                unsigned int                  co_uint32;
+                glusterfs_fop_t               co_fop;
                 struct changelog_entry_fields co_entry;
         };
 } changelog_opt_t;
@@ -266,9 +268,11 @@ typedef struct {
 
 void
 changelog_thread_cleanup (xlator_t *this, pthread_t thr_id);
-inline void *
+
+void *
 changelog_get_usable_buffer (changelog_local_t *local);
-inline void
+
+void
 changelog_set_usable_record_and_length (changelog_local_t *local,
                                         size_t len, int xr);
 void
@@ -288,16 +292,16 @@ int
 changelog_inject_single_event (xlator_t *this,
                                changelog_priv_t *priv,
                                changelog_log_data_t *cld);
-inline size_t
+size_t
 changelog_entry_length ();
-inline int
+int
 changelog_write (int fd, char *buffer, size_t len);
 int
 changelog_write_change (changelog_priv_t *priv, char *buffer, size_t len);
-inline int
+int
 changelog_handle_change (xlator_t *this,
                          changelog_priv_t *priv, changelog_log_data_t *cld);
-inline void
+void
 changelog_update (xlator_t *this, changelog_priv_t *priv,
                   changelog_local_t *local, changelog_log_type type);
 void *
@@ -344,6 +348,14 @@ changelog_forget (xlator_t *this, inode_t *inode);
                 for (; i < CHANGELOG_MAX_TYPE; i++) {   \
                         slice->changelog_version[i]++;  \
                 }                                       \
+        } while (0)
+
+#define CHANGELOG_FILL_UINT32(co, number, converter, xlen) do { \
+                co->co_convert = converter;                     \
+                co->co_free = NULL;                             \
+                co->co_type = CHANGELOG_OPT_REC_UINT32;         \
+                co->co_uint32 = number;                         \
+                xlen += sizeof (unsigned int);                 \
         } while (0)
 
 #define CHANGLOG_FILL_FOP_NUMBER(co, fop, converter, xlen) do { \

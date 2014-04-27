@@ -14,6 +14,7 @@
 #endif
 
 #include <regex.h>
+#include <signal.h>
 
 #include "dht-mem-types.h"
 #include "libxlator.h"
@@ -46,7 +47,7 @@ struct dht_layout {
         int                gen;
         int                type;
         int                ref; /* use with dht_conf_t->layout_lock */
-        int                search_unhashed;
+        gf_boolean_t       search_unhashed;
         struct {
                 int        err;   /* 0 = normal
                                      -1 = dir exists and no xattr
@@ -262,7 +263,7 @@ struct dht_conf {
         int            gen;
         dht_du_t      *du_stats;
         double         min_free_disk;
-	double         min_free_inodes;
+        double         min_free_inodes;
         char           disk_unit;
         int32_t        refresh_interval;
         gf_boolean_t   unhashed_sticky_bit;
@@ -331,12 +332,7 @@ typedef enum {
 #define DHT_MIGRATION_IN_PROGRESS 1
 #define DHT_MIGRATION_COMPLETED   2
 
-#define DHT_LINKFILE_MODE        (S_ISVTX)
-
-#define check_is_linkfile(i,s,x,n) (                                      \
-                ((st_mode_from_ia ((s)->ia_prot, (s)->ia_type) & ~S_IFMT) \
-                 == DHT_LINKFILE_MODE) &&                                 \
-                dict_get (x, n))
+#define check_is_linkfile(i,s,x,n) (IS_DHT_LINKFILE_MODE (s) && dict_get (x, n))
 
 #define IS_DHT_MIGRATION_PHASE2(buf)  (                                 \
                 IA_ISREG ((buf)->ia_type) &&                            \
@@ -354,6 +350,8 @@ typedef enum {
                         (buf)->ia_prot.sgid = 0;                \
                 }                                               \
         } while (0)
+
+#define dht_inode_missing(op_errno) (op_errno == ENOENT || op_errno == ESTALE)
 
 #define check_is_dir(i,s,x) (IA_ISDIR(s->ia_type))
 
@@ -734,7 +732,8 @@ int
 gf_defrag_status_get (gf_defrag_info_t *defrag, dict_t *dict);
 
 int
-gf_defrag_stop (gf_defrag_info_t *defrag, dict_t *output);
+gf_defrag_stop (gf_defrag_info_t *defrag, gf_defrag_status_t status,
+                dict_t *output);
 
 void*
 gf_defrag_start (void *this);
@@ -754,6 +753,7 @@ dht_inode_ctx_layout_set (inode_t *inode, xlator_t *this,
 int
 dht_inode_ctx_time_update (inode_t *inode, xlator_t *this, struct iatt *stat,
                            int32_t update_ctx);
+void dht_inode_ctx_time_set (inode_t *inode, xlator_t *this, struct iatt *stat);
 
 int dht_inode_ctx_get (inode_t *inode, xlator_t *this, dht_inode_ctx_t **ctx);
 int dht_inode_ctx_set (inode_t *inode, xlator_t *this, dht_inode_ctx_t *ctx);

@@ -27,6 +27,810 @@
 
 #include "xlator.h"
 
+/* FAILURE_CBK function section */
+
+int32_t
+default_lookup_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (lookup, frame, -1, op_errno, NULL, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_stat_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (stat, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_truncate_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (truncate, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_ftruncate_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (ftruncate, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_access_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (access, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+int32_t
+default_readlink_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (readlink, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_mknod_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (mknod, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_mkdir_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (mkdir, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_unlink_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (unlink, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_rmdir_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (rmdir, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_symlink_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (symlink, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_rename_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (rename, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_link_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (link, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_create_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (create, frame, -1, op_errno, NULL, NULL, NULL,
+                             NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_open_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (open, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_readv_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (readv, frame, -1, op_errno, NULL, -1, NULL,
+                             NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_writev_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (writev, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_flush_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (flush, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+
+int32_t
+default_fsync_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fsync, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_fstat_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fstat, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_opendir_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (opendir, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_fsyncdir_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fsyncdir, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+int32_t
+default_statfs_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (statfs, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_setxattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (setxattr, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+int32_t
+default_fsetxattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fsetxattr, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+
+int32_t
+default_fgetxattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fgetxattr, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_getxattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (getxattr, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_xattrop_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (xattrop, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_fxattrop_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fxattrop, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_removexattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (removexattr, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+int32_t
+default_fremovexattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fremovexattr, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+int32_t
+default_lk_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (lk, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_inodelk_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (inodelk, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+int32_t
+default_finodelk_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (finodelk, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+int32_t
+default_entrylk_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (entrylk, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+int32_t
+default_fentrylk_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fentrylk, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+
+int32_t
+default_rchecksum_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (rchecksum, frame, -1, op_errno, -1, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_readdir_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (readdir, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_readdirp_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (readdirp, frame, -1, op_errno, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_setattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (setattr, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_fsetattr_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (fsetattr, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_fallocate_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT(fallocate, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_discard_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT(discard, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+default_zerofill_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT(zerofill, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+default_getspec_failure_cbk (call_frame_t *frame, int32_t op_errno)
+{
+        STACK_UNWIND_STRICT (getspec, frame, -1, op_errno, NULL);
+        return 0;
+}
+
+/* _cbk_resume section */
+
+int32_t
+default_lookup_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, inode_t *inode,
+                           struct iatt *buf, dict_t *xdata,
+                           struct iatt *postparent)
+{
+        STACK_UNWIND_STRICT (lookup, frame, op_ret, op_errno, inode, buf,
+                             xdata, postparent);
+        return 0;
+}
+
+int32_t
+default_stat_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                         int32_t op_ret, int32_t op_errno, struct iatt *buf,
+                         dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (stat, frame, op_ret, op_errno, buf, xdata);
+        return 0;
+}
+
+
+int32_t
+default_truncate_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno,
+                             struct iatt *prebuf, struct iatt *postbuf,
+                             dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (truncate, frame, op_ret, op_errno, prebuf,
+                             postbuf, xdata);
+        return 0;
+}
+
+int32_t
+default_ftruncate_cbk_resume (call_frame_t *frame, void *cookie,
+                              xlator_t *this, int32_t op_ret, int32_t op_errno,
+                              struct iatt *prebuf, struct iatt *postbuf,
+                              dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (ftruncate, frame, op_ret, op_errno, prebuf,
+                             postbuf, xdata);
+        return 0;
+}
+
+int32_t
+default_access_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (access, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int32_t
+default_readlink_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno,
+                             const char *path, struct iatt *buf, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (readlink, frame, op_ret, op_errno, path, buf,
+                             xdata);
+        return 0;
+}
+
+
+int32_t
+default_mknod_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, inode_t *inode,
+                          struct iatt *buf, struct iatt *preparent,
+                          struct iatt *postparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (mknod, frame, op_ret, op_errno, inode,
+                             buf, preparent, postparent, xdata);
+        return 0;
+}
+
+int32_t
+default_mkdir_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, inode_t *inode,
+                          struct iatt *buf, struct iatt *preparent,
+                          struct iatt *postparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (mkdir, frame, op_ret, op_errno, inode,
+                             buf, preparent, postparent, xdata);
+        return 0;
+}
+
+int32_t
+default_unlink_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno,
+                           struct iatt *preparent, struct iatt *postparent,
+                           dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (unlink, frame, op_ret, op_errno, preparent,
+                             postparent, xdata);
+        return 0;
+}
+
+int32_t
+default_rmdir_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, struct iatt *preparent,
+                          struct iatt *postparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (rmdir, frame, op_ret, op_errno, preparent,
+                             postparent, xdata);
+        return 0;
+}
+
+
+int32_t
+default_symlink_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, inode_t *inode,
+                            struct iatt *buf, struct iatt *preparent,
+                            struct iatt *postparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (symlink, frame, op_ret, op_errno, inode, buf,
+                             preparent, postparent, xdata);
+        return 0;
+}
+
+
+int32_t
+default_rename_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, struct iatt *buf,
+                           struct iatt *preoldparent,
+                           struct iatt *postoldparent,
+                           struct iatt *prenewparent,
+                           struct iatt *postnewparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (rename, frame, op_ret, op_errno, buf, preoldparent,
+                             postoldparent, prenewparent, postnewparent, xdata);
+        return 0;
+}
+
+
+int32_t
+default_link_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                         int32_t op_ret, int32_t op_errno, inode_t *inode,
+                         struct iatt *buf, struct iatt *preparent,
+                         struct iatt *postparent, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (link, frame, op_ret, op_errno, inode, buf,
+                             preparent, postparent, xdata);
+        return 0;
+}
+
+
+int32_t
+default_create_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, fd_t *fd,
+                           inode_t *inode, struct iatt *buf,
+                           struct iatt *preparent, struct iatt *postparent,
+                           dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode, buf,
+                             preparent, postparent, xdata);
+        return 0;
+}
+
+int32_t
+default_open_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                         int32_t op_ret, int32_t op_errno, fd_t *fd,
+                         dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (open, frame, op_ret, op_errno, fd, xdata);
+        return 0;
+}
+
+int32_t
+default_readv_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno,
+                          struct iovec *vector, int32_t count,
+                          struct iatt *stbuf, struct iobref *iobref,
+                          dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (readv, frame, op_ret, op_errno, vector, count,
+                             stbuf, iobref, xdata);
+        return 0;
+}
+
+
+int32_t
+default_writev_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno,
+                           struct iatt *prebuf, struct iatt *postbuf,
+                           dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (writev, frame, op_ret, op_errno, prebuf, postbuf, xdata);
+        return 0;
+}
+
+
+int32_t
+default_flush_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (flush, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+
+int32_t
+default_fsync_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+                          struct iatt *postbuf, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fsync, frame, op_ret, op_errno, prebuf, postbuf,
+                             xdata);
+        return 0;
+}
+
+int32_t
+default_fstat_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, struct iatt *buf,
+                          dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fstat, frame, op_ret, op_errno, buf, xdata);
+        return 0;
+}
+
+int32_t
+default_opendir_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, fd_t *fd,
+                            dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (opendir, frame, op_ret, op_errno, fd, xdata);
+        return 0;
+}
+
+int32_t
+default_fsyncdir_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fsyncdir, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int32_t
+default_statfs_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno,
+                           struct statvfs *buf, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (statfs, frame, op_ret, op_errno, buf, xdata);
+        return 0;
+}
+
+
+int32_t
+default_setxattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (setxattr, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+int32_t
+default_fsetxattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                              int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fsetxattr, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+
+int32_t
+default_fgetxattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                              int32_t op_ret, int32_t op_errno, dict_t *dict,
+                              dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fgetxattr, frame, op_ret, op_errno, dict, xdata);
+        return 0;
+}
+
+
+int32_t
+default_getxattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno, dict_t *dict,
+                             dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (getxattr, frame, op_ret, op_errno, dict, xdata);
+        return 0;
+}
+
+int32_t
+default_xattrop_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, dict_t *dict,
+                            dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (xattrop, frame, op_ret, op_errno, dict, xdata);
+        return 0;
+}
+
+int32_t
+default_fxattrop_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno, dict_t *dict,
+                      dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fxattrop, frame, op_ret, op_errno, dict, xdata);
+        return 0;
+}
+
+
+int32_t
+default_removexattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                         int32_t op_ret, int32_t op_errno,
+                         dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (removexattr, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+int32_t
+default_fremovexattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                                 int32_t op_ret, int32_t op_errno,
+                                 dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fremovexattr, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int32_t
+default_lk_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                       int32_t op_ret, int32_t op_errno, struct gf_flock *lock,
+                       dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (lk, frame, op_ret, op_errno, lock, xdata);
+        return 0;
+}
+
+int32_t
+default_inodelk_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (inodelk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+int32_t
+default_finodelk_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (finodelk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int32_t
+default_entrylk_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (entrylk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int32_t
+default_fentrylk_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fentrylk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+
+int32_t
+default_rchecksum_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                              int32_t op_ret, int32_t op_errno,
+                              uint32_t weak_checksum, uint8_t *strong_checksum,
+                              dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (rchecksum, frame, op_ret, op_errno, weak_checksum,
+                             strong_checksum, xdata);
+        return 0;
+}
+
+
+int32_t
+default_readdir_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno,
+                            gf_dirent_t *entries, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (readdir, frame, op_ret, op_errno, entries, xdata);
+        return 0;
+}
+
+
+int32_t
+default_readdirp_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno,
+                             gf_dirent_t *entries, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (readdirp, frame, op_ret, op_errno, entries, xdata);
+        return 0;
+}
+
+int32_t
+default_setattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno,
+                            struct iatt *statpre, struct iatt *statpost,
+                            dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (setattr, frame, op_ret, op_errno, statpre,
+                             statpost, xdata);
+        return 0;
+}
+
+int32_t
+default_fsetattr_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno,
+                             struct iatt *statpre, struct iatt *statpost,
+                             dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (fsetattr, frame, op_ret, op_errno, statpre,
+                             statpost, xdata);
+        return 0;
+}
+
+int32_t
+default_fallocate_cbk_resume(call_frame_t *frame, void *cookie, xlator_t *this,
+                             int32_t op_ret, int32_t op_errno,
+                             struct iatt *pre, struct iatt *post,
+                             dict_t *xdata)
+{
+        STACK_UNWIND_STRICT(fallocate, frame, op_ret, op_errno,
+                            pre, post, xdata);
+        return 0;
+}
+
+int32_t
+default_discard_cbk_resume(call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, struct iatt *pre,
+                           struct iatt *post, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, pre, post, xdata);
+        return 0;
+}
+
+int32_t
+default_zerofill_cbk_resume(call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, struct iatt *pre,
+                            struct iatt *post, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT(zerofill, frame, op_ret, op_errno, pre,
+                           post, xdata);
+        return 0;
+}
+
+
+int32_t
+default_getspec_cbk_resume (call_frame_t *frame, void *cookie, xlator_t *this,
+                            int32_t op_ret, int32_t op_errno, char *spec_data)
+{
+        STACK_UNWIND_STRICT (getspec, frame, op_ret, op_errno, spec_data);
+        return 0;
+}
+
 /* _CBK function section */
 
 int32_t
@@ -459,8 +1263,8 @@ default_fallocate_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                       int32_t op_ret, int32_t op_errno, struct iatt *pre,
                       struct iatt *post, dict_t *xdata)
 {
-	STACK_UNWIND_STRICT(fallocate, frame, op_ret, op_errno, pre, post, xdata);
-	return 0;
+        STACK_UNWIND_STRICT(fallocate, frame, op_ret, op_errno, pre, post, xdata);
+        return 0;
 }
 
 int32_t
@@ -468,8 +1272,8 @@ default_discard_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                     int32_t op_ret, int32_t op_errno, struct iatt *pre,
                     struct iatt *post, dict_t *xdata)
 {
-	STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, pre, post, xdata);
-	return 0;
+        STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, pre, post, xdata);
+        return 0;
 }
 
 int32_t
@@ -893,21 +1697,21 @@ default_fsetattr_resume (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
 int32_t
 default_fallocate_resume(call_frame_t *frame, xlator_t *this, fd_t *fd,
-			 int32_t keep_size, off_t offset, size_t len, dict_t *xdata)
+                         int32_t keep_size, off_t offset, size_t len, dict_t *xdata)
 {
-	STACK_WIND(frame, default_fallocate_cbk, FIRST_CHILD(this),
-		   FIRST_CHILD(this)->fops->fallocate, fd, keep_size, offset, len,
-		   xdata);
+        STACK_WIND(frame, default_fallocate_cbk, FIRST_CHILD(this),
+                   FIRST_CHILD(this)->fops->fallocate, fd, keep_size, offset, len,
+                   xdata);
         return 0;
 }
 
 int32_t
 default_discard_resume(call_frame_t *frame, xlator_t *this, fd_t *fd,
-		       off_t offset, size_t len, dict_t *xdata)
+                       off_t offset, size_t len, dict_t *xdata)
 {
-	STACK_WIND(frame, default_discard_cbk, FIRST_CHILD(this),
-		   FIRST_CHILD(this)->fops->discard, fd, offset, len,
-		   xdata);
+        STACK_WIND(frame, default_discard_cbk, FIRST_CHILD(this),
+                   FIRST_CHILD(this)->fops->discard, fd, offset, len,
+                   xdata);
         return 0;
 }
 
@@ -1328,22 +2132,22 @@ default_fsetattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
 int32_t
 default_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd,
-		  int32_t keep_size, off_t offset, size_t len, dict_t *xdata)
+                  int32_t keep_size, off_t offset, size_t len, dict_t *xdata)
 {
-	STACK_WIND_TAIL(frame, FIRST_CHILD(this),
-			FIRST_CHILD(this)->fops->fallocate, fd, keep_size, offset,
-			len, xdata);
-	return 0;
+        STACK_WIND_TAIL(frame, FIRST_CHILD(this),
+                        FIRST_CHILD(this)->fops->fallocate, fd, keep_size, offset,
+                        len, xdata);
+        return 0;
 }
 
 int32_t
 default_discard(call_frame_t *frame, xlator_t *this, fd_t *fd,
-		off_t offset, size_t len, dict_t *xdata)
+                off_t offset, size_t len, dict_t *xdata)
 {
-	STACK_WIND_TAIL(frame, FIRST_CHILD(this),
-			FIRST_CHILD(this)->fops->discard, fd, offset, len,
-			xdata);
-	return 0;
+        STACK_WIND_TAIL(frame, FIRST_CHILD(this),
+                        FIRST_CHILD(this)->fops->discard, fd, offset, len,
+                        xdata);
+        return 0;
 }
 
 int32_t
@@ -1395,6 +2199,57 @@ default_getspec (call_frame_t *frame, xlator_t *this, const char *key,
                          FIRST_CHILD(this)->fops->getspec, key, flags);
         return 0;
 }
+
+
+struct xlator_fops _default_fops = {
+        .create = default_create,
+        .open = default_open,
+        .stat = default_stat,
+        .readlink = default_readlink,
+        .mknod = default_mknod,
+        .mkdir = default_mkdir,
+        .unlink = default_unlink,
+        .rmdir = default_rmdir,
+        .symlink = default_symlink,
+        .rename = default_rename,
+        .link = default_link,
+        .truncate = default_truncate,
+        .readv = default_readv,
+        .writev = default_writev,
+        .statfs = default_statfs,
+        .flush = default_flush,
+        .fsync = default_fsync,
+        .setxattr = default_setxattr,
+        .getxattr = default_getxattr,
+        .fsetxattr = default_fsetxattr,
+        .fgetxattr = default_fgetxattr,
+        .removexattr = default_removexattr,
+        .fremovexattr = default_fremovexattr,
+        .opendir = default_opendir,
+        .readdir = default_readdir,
+        .readdirp = default_readdirp,
+        .fsyncdir = default_fsyncdir,
+        .access = default_access,
+        .ftruncate = default_ftruncate,
+        .fstat = default_fstat,
+        .lk = default_lk,
+        .inodelk = default_inodelk,
+        .finodelk = default_finodelk,
+        .entrylk = default_entrylk,
+        .fentrylk = default_fentrylk,
+        .lookup = default_lookup,
+        .rchecksum = default_rchecksum,
+        .xattrop = default_xattrop,
+        .fxattrop = default_fxattrop,
+        .setattr = default_setattr,
+        .fsetattr = default_fsetattr,
+	.fallocate = default_fallocate,
+	.discard = default_discard,
+        .zerofill = default_zerofill,
+
+        .getspec = default_getspec,
+};
+struct xlator_fops *default_fops = &_default_fops;
 
 /* notify */
 int

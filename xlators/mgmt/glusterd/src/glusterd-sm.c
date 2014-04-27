@@ -527,6 +527,9 @@ out:
         return ret;
 }
 
+/* Clean up stale volumes on the peer being detached. The volumes which have
+ * bricks on other peers are stale with respect to the detached peer.
+ */
 static int
 glusterd_peer_detach_cleanup (glusterd_conf_t *priv)
 {
@@ -538,6 +541,12 @@ glusterd_peer_detach_cleanup (glusterd_conf_t *priv)
 
         list_for_each_entry_safe (volinfo,tmp_volinfo,
                                   &priv->volumes, vol_list) {
+                /* The peer detach checks make sure that, at this point in the
+                 * detach process, there are only volumes contained completely
+                 * within or completely outside the detached peer.
+                 * The only stale volumes at this point are the ones
+                 * completely outside the peer and can be safely deleted.
+                 */
                 if (!glusterd_friend_contains_vol_bricks (volinfo,
                                                           MY_UUID)) {
                         gf_log (THIS->name, GF_LOG_INFO,
@@ -639,16 +648,23 @@ glusterd_ac_handle_friend_add_req (glusterd_friend_sm_event_t *event, void *ctx)
         glusterd_friend_update_ctx_t    *new_ev_ctx = NULL;
         glusterd_friend_sm_event_t      *new_event = NULL;
         glusterd_friend_sm_event_type_t event_type = GD_FRIEND_EVENT_NONE;
+        glusterd_conf_t                *conf       = NULL;
         int                             status = 0;
         int32_t                         op_ret = -1;
         int32_t                         op_errno = 0;
+        xlator_t                       *this       = NULL;
 
+        this = THIS;
+        GF_ASSERT (this);
         GF_ASSERT (ctx);
         ev_ctx = ctx;
         uuid_copy (uuid, ev_ctx->uuid);
         peerinfo = event->peerinfo;
         GF_ASSERT (peerinfo);
         uuid_copy (peerinfo->uuid, ev_ctx->uuid);
+
+        conf = this->private;
+        GF_ASSERT (conf);
 
         //Build comparison logic here.
         ret = glusterd_compare_friend_data (ev_ctx->vols, &status,
@@ -663,6 +679,21 @@ glusterd_ac_handle_friend_add_req (glusterd_friend_sm_event_t *event, void *ctx)
                 event_type = GD_FRIEND_EVENT_LOCAL_RJT;
                 op_errno = GF_PROBE_VOLUME_CONFLICT;
                 op_ret = -1;
+        }
+
+        /* Compare missed_snapshot list with the peer *
+         * if volume comparison is successful */
+        if ((op_ret == 0) &&
+            (conf->op_version >= GD_OP_VERSION_4)) {
+                ret = glusterd_import_friend_missed_snap_list (ev_ctx->vols);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to import peer's "
+                                "missed_snaps_list.");
+                        event_type = GD_FRIEND_EVENT_LOCAL_RJT;
+                        op_errno = GF_PROBE_MISSED_SNAP_CONFLICT;
+                        op_ret = -1;
+                }
         }
 
         ret = glusterd_friend_sm_new_event (event_type, &new_event);

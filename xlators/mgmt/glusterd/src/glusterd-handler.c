@@ -33,6 +33,7 @@
 #include "glusterd-op-sm.h"
 #include "glusterd-utils.h"
 #include "glusterd-store.h"
+#include "glusterd-locks.h"
 
 #include "glusterd1-xdr.h"
 #include "cli1-xdr.h"
@@ -53,6 +54,8 @@
 #ifdef HAVE_BD_XLATOR
 #include <lvm2app.h>
 #endif
+
+extern glusterd_op_info_t opinfo;
 
 int glusterd_big_locked_notify (struct rpc_clnt *rpc, void *mydata,
                                 rpc_clnt_event_t event,
@@ -307,10 +310,23 @@ _build_option_key (dict_t *d, char *k, data_t *v, void *tmp)
         char                    reconfig_key[256] = {0, };
         struct args_pack        *pack             = NULL;
         int                     ret               = -1;
+        xlator_t                *this             = NULL;
+        glusterd_conf_t         *priv             = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
 
         pack = tmp;
         if (strcmp (k, GLUSTERD_GLOBAL_OPT_VERSION) == 0)
                 return 0;
+
+        if (priv->op_version > GD_OP_VERSION_MIN) {
+                if ((strcmp (k, "features.limit-usage") == 0) ||
+                    (strcmp (k, "features.soft-limit") == 0))
+                        return 0;
+        }
         snprintf (reconfig_key, 256, "volume%d.option.%s",
                   pack->vol_count, k);
         ret = dict_set_str (pack->dict, reconfig_key, v->data);
@@ -335,7 +351,7 @@ glusterd_add_volume_detail_to_dict (glusterd_volinfo_t *volinfo,
         char                    *volume_id_str  = NULL;
         struct args_pack        pack = {0,};
         xlator_t                *this = NULL;
-        int                     caps = 0;
+        GF_UNUSED int           caps = 0;
 
         GF_ASSERT (volinfo);
         GF_ASSERT (volumes);
@@ -359,6 +375,21 @@ glusterd_add_volume_detail_to_dict (glusterd_volinfo_t *volinfo,
         ret = dict_set_int32 (volumes, key, volinfo->status);
         if (ret)
                 goto out;
+
+        /* As of now, the snap volumes are also displayed as part of
+           volume info command. So this change is to display whether
+           the volume is original volume or the snap_volume. If
+           displaying of snap volumes in volume info o/p is not needed
+           this should be removed.
+        */
+        snprintf (key, 256, "volume%d.snap_volume", count);
+        ret = dict_set_int32 (volumes, key, volinfo->is_snap_volume);
+        if (ret) {
+                gf_log (this->name, GF_LOG_WARNING, "failed to set whether "
+                        "the volume is a snap volume or actual volume (%s)",
+                        volinfo->volname);
+                goto out;
+        }
 
         snprintf (key, 256, "volume%d.brick_count", count);
         ret = dict_set_int32 (volumes, key, volinfo->brick_count);
@@ -464,6 +495,22 @@ glusterd_add_volume_detail_to_dict (glusterd_volinfo_t *volinfo,
                         }
                 }
 
+                if (volinfo->caps & CAPS_OFFLOAD_ZERO) {
+                        snprintf (key, 256, "volume%d.xlator0.caps%d", count,
+                                  caps++);
+                        buf = GF_MALLOC (256, gf_common_mt_char);
+                        if (!buf) {
+                                ret = ENOMEM;
+                                goto out;
+                        }
+                        snprintf (buf, 256, "offload_zerofill");
+                        ret = dict_set_dynstr (volumes, key, buf);
+                        if (ret)  {
+                                GF_FREE (buf);
+                                goto out;
+                        }
+                }
+
         }
 #endif
 
@@ -559,10 +606,16 @@ int32_t
 glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
                        char *err_str, size_t err_len)
 {
-        int32_t                  ret    = -1;
-        xlator_t                *this   = NULL;
-        glusterd_conf_t         *priv   = NULL;
-        int32_t                  locked = 0;
+        int32_t                     ret             = -1;
+        dict_t                     *dict            = NULL;
+        xlator_t                   *this            = NULL;
+        glusterd_conf_t            *priv            = NULL;
+        int32_t                     locked          = 0;
+        char                       *tmp             = NULL;
+        char                       *volname         = NULL;
+        uuid_t                     *txn_id          = NULL;
+        glusterd_op_info_t          txn_op_info     = {{0},};
+        glusterd_op_sm_event_type_t event_type      = GD_OP_EVENT_NONE;
 
         GF_ASSERT (req);
         GF_ASSERT ((op > GD_OP_NONE) && (op < GD_OP_MAX));
@@ -573,33 +626,122 @@ glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
         priv = this->private;
         GF_ASSERT (priv);
 
-        ret = glusterd_lock (MY_UUID);
+        dict = ctx;
+
+        /* Generate a transaction-id for this operation and
+         * save it in the dict. This transaction id distinguishes
+         * each transaction, and helps separate opinfos in the
+         * op state machine. */
+        ret = glusterd_generate_txn_id (dict, &txn_id);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR,
-                        "Unable to acquire lock on localhost, ret: %d", ret);
-                snprintf (err_str, err_len, "Another transaction is in progress. "
-                          "Please try again after sometime.");
+                        "Failed to generate transaction id");
                 goto out;
+        }
+
+        /* Save the MY_UUID as the originator_uuid. This originator_uuid
+         * will be used by is_origin_glusterd() to determine if a node
+         * is the originator node for a command. */
+        ret = glusterd_set_originator_uuid (dict);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to set originator_uuid.");
+                goto out;
+        }
+
+        /* Based on the op_version, acquire a cluster or mgmt_v3 lock */
+        if (priv->op_version < GD_OP_VERSION_4) {
+                ret = glusterd_lock (MY_UUID);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Unable to acquire lock on localhost, ret: %d",
+                                ret);
+                        snprintf (err_str, err_len,
+                                  "Another transaction is in progress. "
+                                  "Please try again after sometime.");
+                        goto out;
+                }
+        } else {
+                /* If no volname is given as a part of the command, locks will
+                 * not be held */
+                ret = dict_get_str (dict, "volname", &tmp);
+                if (ret) {
+                        gf_log ("", GF_LOG_INFO,
+                                "No Volume name present. "
+                                "Locks not being held.");
+                        goto local_locking_done;
+                } else {
+                        /* Use a copy of volname, as cli response will be
+                         * sent before the unlock, and the volname in the
+                         * dict, might be removed */
+                        volname = gf_strdup (tmp);
+                        if (!volname)
+                                goto out;
+                }
+
+                ret = glusterd_mgmt_v3_lock (volname, MY_UUID, "vol");
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Unable to acquire lock for %s", volname);
+                        snprintf (err_str, err_len,
+                                  "Another transaction is in progress for %s. "
+                                  "Please try again after sometime.", volname);
+                        goto out;
+                }
         }
 
         locked = 1;
         gf_log (this->name, GF_LOG_DEBUG, "Acquired lock on localhost");
 
-        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_START_LOCK, NULL);
+local_locking_done:
+
+        /* If no volname is given as a part of the command, locks will
+         * not be held, hence sending stage event. */
+        if (volname || (priv->op_version < GD_OP_VERSION_4))
+                event_type = GD_OP_EVENT_START_LOCK;
+        else {
+                txn_op_info.state.state = GD_OP_STATE_LOCK_SENT;
+                event_type = GD_OP_EVENT_ALL_ACC;
+        }
+
+        /* Save opinfo for this transaction with the transaction id */
+        glusterd_txn_opinfo_init (&txn_op_info, NULL, &op, ctx, req);
+
+        ret = glusterd_set_txn_opinfo (txn_id, &txn_op_info);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Unable to set transaction's opinfo");
+                if (ctx)
+                        dict_unref (ctx);
+                goto out;
+        }
+
+        ret = glusterd_op_sm_inject_event (event_type, txn_id, ctx);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "Failed to acquire cluster"
                         " lock.");
                 goto out;
         }
 
-        glusterd_op_set_op (op);
-        glusterd_op_set_ctx (ctx);
-        glusterd_op_set_req (req);
-
-
 out:
-        if (locked && ret)
-                glusterd_unlock (MY_UUID);
+        if (locked && ret) {
+                /* Based on the op-version, we release the
+                 * cluster or mgmt_v3 lock */
+                if (priv->op_version < GD_OP_VERSION_4)
+                        glusterd_unlock (MY_UUID);
+                else {
+                        ret = glusterd_mgmt_v3_unlock (volname, MY_UUID,
+                                                       "vol");
+                        if (ret)
+                                gf_log (this->name, GF_LOG_ERROR,
+                                        "Unable to release lock for %s",
+                                        volname);
+                        ret = -1;
+                }
+        }
+
+        if (volname)
+                GF_FREE (volname);
 
         gf_log (this->name, GF_LOG_DEBUG, "Returning %d", ret);
         return ret;
@@ -608,15 +750,24 @@ out:
 int
 __glusterd_handle_cluster_lock (rpcsvc_request_t *req)
 {
-        gd1_mgmt_cluster_lock_req       lock_req = {{0},};
-        int32_t                         ret = -1;
-        glusterd_op_lock_ctx_t          *ctx = NULL;
-        glusterd_peerinfo_t             *peerinfo = NULL;
-        xlator_t                        *this = NULL;
+        dict_t                         *op_ctx      = NULL;
+        int32_t                         ret         = -1;
+        gd1_mgmt_cluster_lock_req       lock_req    = {{0},};
+        glusterd_op_lock_ctx_t         *ctx         = NULL;
+        glusterd_op_t                   op          = GD_OP_EVENT_LOCK;
+        glusterd_peerinfo_t            *peerinfo    = NULL;
+        glusterd_op_info_t              txn_op_info = {{0},};
+        glusterd_conf_t                *priv        = NULL;
+        uuid_t                         *txn_id      = NULL;
+        xlator_t                       *this        = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
         GF_ASSERT (req);
+
+        txn_id = &priv->global_txn_id;
 
         ret = xdr_to_generic (req->msg[0], &lock_req,
                               (xdrproc_t)xdr_gd1_mgmt_cluster_lock_req);
@@ -647,8 +798,29 @@ __glusterd_handle_cluster_lock (rpcsvc_request_t *req)
 
         uuid_copy (ctx->uuid, lock_req.uuid);
         ctx->req = req;
+        ctx->dict = NULL;
 
-        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_LOCK, ctx);
+        op_ctx =  dict_new ();
+        if (!op_ctx) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Unable to set new dict");
+                goto out;
+        }
+
+        glusterd_txn_opinfo_init (&txn_op_info, NULL, &op, op_ctx, req);
+
+        ret = glusterd_set_txn_opinfo (txn_id, &txn_op_info);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Unable to set transaction's opinfo");
+                dict_unref (txn_op_info.op_ctx);
+                goto out;
+        }
+
+        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_LOCK, txn_id, ctx);
+        if (ret)
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to inject event GD_OP_EVENT_LOCK");
 
 out:
         gf_log (this->name, GF_LOG_DEBUG, "Returning %d", ret);
@@ -724,10 +896,18 @@ __glusterd_handle_stage_op (rpcsvc_request_t *req)
         gd1_mgmt_stage_op_req           op_req = {{0},};
         glusterd_peerinfo_t             *peerinfo = NULL;
         xlator_t                        *this = NULL;
+        uuid_t                          *txn_id = NULL;
+        glusterd_op_info_t              txn_op_info = {{0},};
+        glusterd_op_sm_state_info_t     state = {0,};
+        glusterd_conf_t                 *priv = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
         GF_ASSERT (req);
+
+        txn_id = &priv->global_txn_id;
 
         ret = xdr_to_generic (req->msg[0], &op_req,
                               (xdrproc_t)xdr_gd1_mgmt_stage_op_req);
@@ -752,7 +932,36 @@ __glusterd_handle_stage_op (rpcsvc_request_t *req)
         if (ret)
                 goto out;
 
-        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_STAGE_OP, req_ctx);
+        ret = dict_get_bin (req_ctx->dict, "transaction_id", (void **)&txn_id);
+
+        gf_log ("", GF_LOG_DEBUG, "transaction ID = %s", uuid_utoa (*txn_id));
+
+        /* In cases where there is no volname, the receivers won't have a
+         * transaction opinfo created, as for those operations, the locking
+         * phase where the transaction opinfos are created, won't be called. */
+        ret = glusterd_get_txn_opinfo (txn_id, &txn_op_info);
+        if (ret) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "No transaction's opinfo set");
+
+                state.state = GD_OP_STATE_LOCKED;
+                glusterd_txn_opinfo_init (&txn_op_info, &state,
+                                          &op_req.op, req_ctx->dict, req);
+
+                ret = glusterd_set_txn_opinfo (txn_id, &txn_op_info);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Unable to set transaction's opinfo");
+                        dict_unref (req_ctx->dict);
+                        goto out;
+                }
+        }
+
+        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_STAGE_OP,
+                                           txn_id, req_ctx);
+        if (ret)
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to inject event GD_OP_EVENT_STAGE_OP");
 
  out:
         free (op_req.buf.buf_val);//malloced by xdr
@@ -776,10 +985,16 @@ __glusterd_handle_commit_op (rpcsvc_request_t *req)
         gd1_mgmt_commit_op_req          op_req = {{0},};
         glusterd_peerinfo_t             *peerinfo = NULL;
         xlator_t                        *this = NULL;
+        uuid_t                          *txn_id = NULL;
+        glusterd_conf_t                 *priv = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
         GF_ASSERT (req);
+
+        txn_id = &priv->global_txn_id;
 
         ret = xdr_to_generic (req->msg[0], &op_req,
                               (xdrproc_t)xdr_gd1_mgmt_commit_op_req);
@@ -806,11 +1021,12 @@ __glusterd_handle_commit_op (rpcsvc_request_t *req)
         if (ret)
                 goto out;
 
-        ret = glusterd_op_init_ctx (op_req.op);
-        if (ret)
-                goto out;
+        ret = dict_get_bin (req_ctx->dict, "transaction_id", (void **)&txn_id);
 
-        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_COMMIT_OP, req_ctx);
+        gf_log ("", GF_LOG_DEBUG, "transaction ID = %s", uuid_utoa (*txn_id));
+
+        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_COMMIT_OP,
+                                           txn_id, req_ctx);
 
 out:
         free (op_req.buf.buf_val);//malloced by xdr
@@ -951,6 +1167,8 @@ __glusterd_handle_cli_deprobe (rpcsvc_request_t *req)
         char                      *hostname = NULL;
         int                            port = 0;
         int                           flags = 0;
+        glusterd_volinfo_t         *volinfo = NULL;
+        glusterd_volinfo_t             *tmp = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -991,7 +1209,6 @@ __glusterd_handle_cli_deprobe (rpcsvc_request_t *req)
                 gf_log (this->name, GF_LOG_ERROR, "Failed to get port");
                 goto out;
         }
-
         ret = dict_get_int32 (dict, "flags", &flags);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "Failed to get flags");
@@ -1011,22 +1228,30 @@ __glusterd_handle_cli_deprobe (rpcsvc_request_t *req)
         }
 
         if (!(flags & GF_CLI_FLAG_OP_FORCE)) {
-                if (!uuid_is_null (uuid)) {
-                        /* Check if peers are connected, except peer being detached*/
-                        if (!glusterd_chk_peers_connected_befriended (uuid)) {
-                                ret = -1;
-                                op_errno = GF_DEPROBE_FRIEND_DOWN;
-                                goto out;
-                        }
-                        ret = glusterd_all_volume_cond_check (
-                                                 glusterd_friend_brick_belongs,
-                                                 -1, &uuid);
-                        if (ret) {
-                                op_errno = GF_DEPROBE_BRICK_EXIST;
-                                goto out;
-                        }
+                /* Check if peers are connected, except peer being
+                * detached*/
+                if (!glusterd_chk_peers_connected_befriended (uuid)) {
+                        ret = -1;
+                        op_errno = GF_DEPROBE_FRIEND_DOWN;
+                        goto out;
                 }
+        }
 
+        /* Check for if volumes exist with some bricks on the peer being
+        * detached. It's not a problem if a volume contains none or all
+        * of its bricks on the peer being detached
+        */
+        list_for_each_entry_safe (volinfo, tmp, &priv->volumes,
+                                  vol_list) {
+                ret = glusterd_friend_contains_vol_bricks (volinfo,
+                                                           uuid);
+                if (ret == 1) {
+                        op_errno = GF_DEPROBE_BRICK_EXIST;
+                        goto out;
+                }
+        }
+
+        if (!(flags & GF_CLI_FLAG_OP_FORCE)) {
                 if (glusterd_is_any_volume_in_server_quorum (this) &&
                     !does_gd_meet_server_quorum (this)) {
                         gf_log (this->name, GF_LOG_ERROR, "Quorum does not "
@@ -1861,6 +2086,56 @@ glusterd_op_unlock_send_resp (rpcsvc_request_t *req, int32_t status)
 }
 
 int
+glusterd_op_mgmt_v3_lock_send_resp (rpcsvc_request_t *req, uuid_t *txn_id,
+                                   int32_t status)
+{
+
+        gd1_mgmt_v3_lock_rsp    rsp = {{0},};
+        int                     ret = -1;
+
+        GF_ASSERT (req);
+        GF_ASSERT (txn_id);
+        glusterd_get_uuid (&rsp.uuid);
+        rsp.op_ret = status;
+        if (rsp.op_ret)
+               rsp.op_errno = errno;
+        uuid_copy (rsp.txn_id, *txn_id);
+
+        ret = glusterd_submit_reply (req, &rsp, NULL, 0, NULL,
+                                     (xdrproc_t)xdr_gd1_mgmt_v3_lock_rsp);
+
+        gf_log (THIS->name, GF_LOG_DEBUG, "Responded to mgmt_v3 lock, ret: %d",
+                ret);
+
+        return ret;
+}
+
+int
+glusterd_op_mgmt_v3_unlock_send_resp (rpcsvc_request_t *req, uuid_t *txn_id,
+                                     int32_t status)
+{
+
+        gd1_mgmt_v3_unlock_rsp      rsp = {{0},};
+        int                             ret = -1;
+
+        GF_ASSERT (req);
+        GF_ASSERT (txn_id);
+        rsp.op_ret = status;
+        if (rsp.op_ret)
+               rsp.op_errno = errno;
+        glusterd_get_uuid (&rsp.uuid);
+        uuid_copy (rsp.txn_id, *txn_id);
+
+        ret = glusterd_submit_reply (req, &rsp, NULL, 0, NULL,
+                                     (xdrproc_t)xdr_gd1_mgmt_v3_unlock_rsp);
+
+        gf_log (THIS->name, GF_LOG_DEBUG, "Responded to mgmt_v3 unlock, ret: %d",
+                ret);
+
+        return ret;
+}
+
+int
 __glusterd_handle_cluster_unlock (rpcsvc_request_t *req)
 {
         gd1_mgmt_cluster_unlock_req     unlock_req = {{0}, };
@@ -1868,10 +2143,16 @@ __glusterd_handle_cluster_unlock (rpcsvc_request_t *req)
         glusterd_op_lock_ctx_t          *ctx = NULL;
         glusterd_peerinfo_t             *peerinfo = NULL;
         xlator_t                        *this = NULL;
+        uuid_t                          *txn_id = NULL;
+        glusterd_conf_t                 *priv = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
         GF_ASSERT (req);
+
+        txn_id = &priv->global_txn_id;
 
         ret = xdr_to_generic (req->msg[0], &unlock_req,
                               (xdrproc_t)xdr_gd1_mgmt_cluster_unlock_req);
@@ -1902,8 +2183,9 @@ __glusterd_handle_cluster_unlock (rpcsvc_request_t *req)
         }
         uuid_copy (ctx->uuid, unlock_req.uuid);
         ctx->req = req;
+        ctx->dict = NULL;
 
-        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_UNLOCK, ctx);
+        ret = glusterd_op_sm_inject_event (GD_OP_EVENT_UNLOCK, txn_id, ctx);
 
 out:
         glusterd_friend_sm ();
@@ -3121,6 +3403,12 @@ set_probe_error_str (int op_ret, int op_errno, char *op_errstr, char *errstr,
                                           "in this state");
                                 break;
 
+                        case GF_PROBE_MISSED_SNAP_CONFLICT:
+                                snprintf (errstr, len, "Failed to update "
+                                          "list of missed snapshots from "
+                                          "peer %s", hostname);
+                                break;
+
                         default:
                                 snprintf (errstr, len, "Probe returned with "
                                           "unknown errno %d", op_errno);
@@ -3452,10 +3740,13 @@ __glusterd_handle_status_volume (rpcsvc_request_t *req)
         glusterd_op_t                   cli_op  = GD_OP_STATUS_VOLUME;
         char                            err_str[2048] = {0,};
         xlator_t                       *this = NULL;
+        glusterd_conf_t                *conf = NULL;
 
         GF_ASSERT (req);
         this = THIS;
         GF_ASSERT (this);
+        conf = this->private;
+        GF_ASSERT (conf);
 
         ret = xdr_to_generic (req->msg[0], &cli_req, (xdrproc_t)xdr_gf_cli_req);
         if (ret < 0) {
@@ -3495,6 +3786,14 @@ __glusterd_handle_status_volume (rpcsvc_request_t *req)
                 gf_log (this->name, GF_LOG_INFO,
                         "Received status volume req for volume %s", volname);
 
+        }
+        if ((cmd & GF_CLI_STATUS_QUOTAD) &&
+            (conf->op_version == GD_OP_VERSION_MIN)) {
+                snprintf (err_str, sizeof (err_str), "The cluster is operating "
+                          "at version 1. Getting the status of quotad is not "
+                          "allowed in this state.");
+                ret = -1;
+                goto out;
         }
 
         ret = glusterd_op_begin_synctask (req, GD_OP_STATUS_VOLUME, dict);
@@ -3612,15 +3911,19 @@ get_brickinfo_from_brickid (char *brickid, glusterd_brickinfo_t **brickinfo)
 
         volid_str = brickid_dup;
         brick = strchr (brickid_dup, ':');
-        *brick = '\0';
-        brick++;
         if (!volid_str || !brick)
                 goto out;
 
+        *brick = '\0';
+        brick++;
         uuid_parse (volid_str, volid);
         ret = glusterd_volinfo_find_by_volume_id (volid, &volinfo);
-        if (ret)
-                goto out;
+        if (ret) {
+                /* Check if it a snapshot volume */
+                ret = glusterd_snap_volinfo_find_by_volume_id (volid, &volinfo);
+                if (ret)
+                        goto out;
+        }
 
         ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
                                                       brickinfo);
@@ -3671,10 +3974,12 @@ __glusterd_brick_rpc_notify (struct rpc_clnt *rpc, void *mydata,
                                 "%s:%s", brickinfo->hostname, brickinfo->path);
 
                 glusterd_set_brick_status (brickinfo, GF_BRICK_STOPPED);
-                if (rpc_clnt_is_disabled (rpc))
-                        GF_FREE (brickid);
                 break;
 
+        case RPC_CLNT_DESTROY:
+                GF_FREE (mydata);
+                mydata = NULL;
+                break;
         default:
                 gf_log (this->name, GF_LOG_TRACE,
                         "got some other RPC event %d", event);
@@ -3794,6 +4099,8 @@ __glusterd_peer_rpc_notify (struct rpc_clnt *rpc, void *mydata,
         glusterd_peerinfo_t  *peerinfo    = NULL;
         glusterd_peerctx_t   *peerctx     = NULL;
         gf_boolean_t         quorum_action = _gf_false;
+        glusterd_volinfo_t   *volinfo     = NULL;
+        uuid_t               uuid;
 
         peerctx = mydata;
         if (!peerctx)
@@ -3820,6 +4127,31 @@ __glusterd_peer_rpc_notify (struct rpc_clnt *rpc, void *mydata,
         {
                 gf_log (this->name, GF_LOG_DEBUG, "got RPC_CLNT_DISCONNECT %d",
                         peerinfo->state.state);
+
+                if (peerinfo->connected) {
+                        if (conf->op_version < GD_OP_VERSION_4) {
+                                glusterd_get_lock_owner (&uuid);
+                                if (!uuid_is_null (uuid) &&
+                                    !uuid_compare (peerinfo->uuid, uuid))
+                                        glusterd_unlock (peerinfo->uuid);
+                        } else {
+                                list_for_each_entry (volinfo, &conf->volumes,
+                                                     vol_list) {
+                                        ret = glusterd_mgmt_v3_unlock
+                                                    (volinfo->volname,
+                                                     peerinfo->uuid,
+                                                     "vol");
+                                        if (ret)
+                                                gf_log (this->name,
+                                                        GF_LOG_TRACE,
+                                                        "Lock not released "
+                                                        "for %s",
+                                                         volinfo->volname);
+                                }
+                        }
+
+                        ret = 0;
+                }
 
                 if ((peerinfo->quorum_contrib != QUORUM_DOWN) &&
                     (peerinfo->state.state == GD_FRIEND_STATE_BEFRIENDED)) {
@@ -3936,8 +4268,9 @@ rpcsvc_actor_t gd_svc_cli_actors[] = {
         [GLUSTER_CLI_STATEDUMP_VOLUME]   = {"STATEDUMP_VOLUME",   GLUSTER_CLI_STATEDUMP_VOLUME, glusterd_handle_cli_statedump_volume,  NULL, 0, DRC_NA},
         [GLUSTER_CLI_LIST_VOLUME]        = {"LIST_VOLUME",        GLUSTER_CLI_LIST_VOLUME,      glusterd_handle_cli_list_volume,       NULL, 0, DRC_NA},
         [GLUSTER_CLI_CLRLOCKS_VOLUME]    = {"CLEARLOCKS_VOLUME",  GLUSTER_CLI_CLRLOCKS_VOLUME,  glusterd_handle_cli_clearlocks_volume, NULL, 0, DRC_NA},
-        [GLUSTER_CLI_COPY_FILE]     = {"COPY_FILE", GLUSTER_CLI_COPY_FILE, glusterd_handle_copy_file, NULL, 0, DRC_NA},
-        [GLUSTER_CLI_SYS_EXEC]      = {"SYS_EXEC", GLUSTER_CLI_SYS_EXEC, glusterd_handle_sys_exec, NULL, 0, DRC_NA},
+        [GLUSTER_CLI_COPY_FILE]          = {"COPY_FILE",          GLUSTER_CLI_COPY_FILE,        glusterd_handle_copy_file,             NULL, 0, DRC_NA},
+        [GLUSTER_CLI_SYS_EXEC]           = {"SYS_EXEC",           GLUSTER_CLI_SYS_EXEC,         glusterd_handle_sys_exec,              NULL, 0, DRC_NA},
+        [GLUSTER_CLI_SNAP]               = {"SNAP",               GLUSTER_CLI_SNAP,             glusterd_handle_snapshot,              NULL, 0, DRC_NA},
 };
 
 struct rpcsvc_program gd_svc_cli_prog = {

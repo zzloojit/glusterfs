@@ -130,8 +130,6 @@ ret:
         return iob;
 }
 
-
-
 int
 server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
                      struct iovec *payload, int payloadcount,
@@ -144,6 +142,10 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
         char                    new_iobref = 0;
         client_t               *client     = NULL;
         gf_boolean_t            lk_heal    = _gf_false;
+        server_conf_t          *conf       = NULL;
+        gf_barrier_t           *barrier    = NULL;
+        gf_barrier_payload_t   *stub       = NULL;
+        gf_boolean_t            barriered  = _gf_false;
 
         GF_VALIDATE_OR_GOTO ("server", req, ret);
 
@@ -151,6 +153,7 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
                 state = CALL_STATE (frame);
                 frame->local = NULL;
                 client = frame->root->client;
+                conf = (server_conf_t *) client->this->private;
         }
 
         if (client)
@@ -173,6 +176,32 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
 
         iobref_add (iobref, iob);
 
+        if (conf)
+                barrier = conf->barrier;
+        if (barrier) {
+                /* todo: write's with fd flags set to O_SYNC and O_DIRECT */
+                LOCK (&barrier->lock);
+                {
+                        if (is_fop_barriered (barrier->fops, req->procnum) &&
+                            (barrier_add_to_queue (barrier))) {
+                                stub = gf_barrier_payload (req, &rsp, frame,
+                                                           payload,
+                                                           payloadcount, iobref,
+                                                           iob, new_iobref);
+                                if (stub) {
+                                        gf_barrier_enqueue (barrier, stub);
+                                        barriered = _gf_true;
+                                } else {
+                                        gf_log ("", GF_LOG_ERROR, "Failed to "
+                                                " barrier fop %"PRIu64,
+                                                ((uint64_t)1 << req->procnum));
+                                }
+                        }
+                }
+                UNLOCK (&barrier->lock);
+                if (barriered == _gf_true)
+                        goto out;
+        }
         /* Then, submit the message for transmission. */
         ret = rpcsvc_submit_generic (req, &rsp, 1, payload, payloadcount,
                                      iobref);
@@ -214,7 +243,7 @@ ret:
         if (new_iobref) {
                 iobref_unref (iobref);
         }
-
+out:
         return ret;
 }
 
@@ -659,7 +688,7 @@ server_init_grace_timer (xlator_t *this, dict_t *options,
                 conf->grace_ts.tv_sec = 10;
 
         gf_log (this->name, GF_LOG_DEBUG, "Server grace timeout "
-                "value = %"PRIu64, conf->grace_ts.tv_sec);
+                "value = %"GF_PRI_SECOND, conf->grace_ts.tv_sec);
 
         conf->grace_ts.tv_nsec  = 0;
 
@@ -746,7 +775,15 @@ reconfigure (xlator_t *this, dict_t *options)
 
         (void) rpcsvc_set_allow_insecure (rpc_conf, options);
         (void) rpcsvc_set_root_squash (rpc_conf, options);
-        (void) rpcsvc_set_outstanding_rpc_limit (rpc_conf, options);
+
+        ret = rpcsvc_set_outstanding_rpc_limit (rpc_conf, options,
+                                         RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to reconfigure outstanding-rpc-limit");
+                goto out;
+        }
+
         list_for_each_entry (listeners, &(rpc_conf->listeners), list) {
                 if (listeners->trans != NULL) {
                         if (listeners->trans->reconfigure )
@@ -770,7 +807,7 @@ client_destroy_cbk (xlator_t *this, client_t *client)
         server_ctx_t *ctx = NULL;
 
         client_ctx_del (client, this, &tmp);
- 
+
         ctx = tmp;
 
         if (ctx == NULL)
@@ -790,6 +827,8 @@ init (xlator_t *this)
         server_conf_t     *conf     = NULL;
         rpcsvc_listener_t *listener = NULL;
         char              *statedump_path = NULL;
+        gf_barrier_t      *barrier  = NULL;
+        char              *str      = NULL;
         GF_VALIDATE_OR_GOTO ("init", this, out);
 
         if (this->children == NULL) {
@@ -860,9 +899,17 @@ init (xlator_t *this)
         /* RPC related */
         conf->rpc = rpcsvc_init (this, this->ctx, this->options, 0);
         if (conf->rpc == NULL) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_log (this->name, GF_LOG_ERROR,
                         "creation of rpcsvc failed");
                 ret = -1;
+                goto out;
+        }
+
+        ret = rpcsvc_set_outstanding_rpc_limit (conf->rpc, this->options,
+                                         RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to configure outstanding-rpc-limit");
                 goto out;
         }
 
@@ -930,6 +977,37 @@ init (xlator_t *this)
                 }
         }
 #endif
+        /* barrier related */
+        barrier = GF_CALLOC (1, sizeof (*barrier),1);
+        if (!barrier) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "WARNING: Failed to allocate barrier");
+                ret = -1;
+                goto out;
+        }
+
+        LOCK_INIT (&barrier->lock);
+        INIT_LIST_HEAD (&barrier->queue);
+        barrier->on = _gf_false;
+
+        GF_OPTION_INIT ("barrier-queue-length", barrier->max_size,
+                        int64, out);
+        GF_OPTION_INIT ("barrier-timeout", barrier->time_out,
+                        uint64, out);
+
+        ret = dict_get_str (this->options, "barrier-fops", &str);
+        if (ret) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "setting barrier fops to default value");
+        }
+        ret = gf_barrier_fops_configure (this, barrier, str);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "invalid barrier fops specified");
+                goto out;
+        }
+
+        conf->barrier = barrier;
         this->private = conf;
 
         ret = 0;
@@ -983,12 +1061,48 @@ int
 notify (xlator_t *this, int32_t event, void *data, ...)
 {
         int          ret = 0;
+        int32_t      val = 0;
+        dict_t      *dict = NULL;
+        dict_t      *output = NULL;
+        va_list      ap;
+
+        dict = data;
+        va_start (ap, data);
+        output = va_arg (ap, dict_t*);
+        va_end (ap);
+
         switch (event) {
+        case GF_EVENT_VOLUME_BARRIER_OP:
+               ret = dict_get_int32 (dict, "barrier", &val);
+               if (ret) {
+                       gf_log (this->name, GF_LOG_ERROR,
+                               "Wrong BARRIER event");
+                       goto out;
+               }
+               /* !val un-barrier, if val, barrier */
+               if (val) {
+                       ret = gf_barrier_start (this);
+                       if (ret)
+                                gf_log (this->name, GF_LOG_ERROR,
+                                        "Barrier start failed");
+               } else {
+                       ret = gf_barrier_stop (this);
+                       if (ret)
+                               gf_log (this->name, GF_LOG_ERROR,
+                                       "Barrier stop failed");
+               }
+               ret = dict_set_int32 (output, "barrier-status", ret);
+               if (ret)
+                       gf_log (this->name, GF_LOG_ERROR,
+                               "Failed to set barrier-status in dict");
+               break;
+
+               /* todo: call default_notify to make other xlators handle it.*/
         default:
                 default_notify (this, event, data);
                 break;
         }
-
+out:
         return ret;
 }
 
@@ -1052,10 +1166,26 @@ struct volume_options options[] = {
         { .key   = {"root-squash"},
           .type  = GF_OPTION_TYPE_BOOL,
           .default_value = "off",
-          .description = "Map  requests  from  uid/gid 0 to the anonymous "
-                         "uid/gid. Note that this does not apply to any other"
-                         "uids or gids that might be equally sensitive, such as"
-                         "user bin or group staff."
+          .description = "Map requests from uid/gid 0 to the anonymous "
+                         "uid/gid. Note that this does not apply to any other "
+                         "uids or gids that might be equally sensitive, such "
+                         "as user bin or group staff."
+        },
+        { .key           = {"anonuid"},
+          .type          = GF_OPTION_TYPE_INT,
+          .default_value = "65534", /* RPC_NOBODY_UID */
+          .min           = 0,
+          .max           = (uint32_t) -1,
+          .description   = "value of the uid used for the anonymous "
+                           "user/nfsnobody when root-squash is enabled."
+        },
+        { .key           = {"anongid"},
+          .type          = GF_OPTION_TYPE_INT,
+          .default_value = "65534", /* RPC_NOBODY_GID */
+          .min           = 0,
+          .max           = (uint32_t) -1,
+          .description   = "value of the gid used for the anonymous "
+                           "user/nfsnobody when root-squash is enabled."
         },
         { .key           = {"statedump-path"},
           .type          = GF_OPTION_TYPE_PATH,
@@ -1085,15 +1215,34 @@ struct volume_options options[] = {
         { .key   = {"auth.addr.*.allow"},
           .type  = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
           .description = "Allow a comma separated list of addresses and/or "
-                         "hostnames to connect to the server. By default, all"
-                         " connections are allowed."
+                         "hostnames to connect to the server. Option "
+                         "auth.reject overrides this option. By default, all "
+                         "connections are allowed."
         },
         { .key   = {"auth.addr.*.reject"},
           .type  = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
           .description = "Reject a comma separated list of addresses and/or "
-                         "hostnames to connect to the server. By default, all"
+                         "hostnames to connect to the server. This option "
+                         "overrides the auth.allow option. By default, all"
                          " connections are allowed."
         },
-
+        {.key  = {"barrier-timeout"},
+         .type = GF_OPTION_TYPE_INT,
+         .default_value = "60",
+         .min  = 0,
+         .max  = 360,
+         .description = "Barrier timeout in seconds",
+        },
+        {.key  = {"barrier-queue-length"},
+         .type = GF_OPTION_TYPE_INT,
+         .default_value = "4096",
+         .min  = 0,
+         .max  = 16384,
+         .description = "Barrier queue length",
+        },
+        {.key = {"barrier-fops"},
+         .type = GF_OPTION_TYPE_STR,
+         .description = "Allow a comma seperated fop lists",
+        },
         { .key   = {NULL} },
 };

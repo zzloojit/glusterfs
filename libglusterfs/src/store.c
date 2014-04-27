@@ -62,8 +62,8 @@ gf_store_mkstemp (gf_store_handle_t *shandle)
         int     fd = -1;
         char    tmppath[PATH_MAX] = {0,};
 
-        GF_ASSERT (shandle);
-        GF_ASSERT (shandle->path);
+        GF_VALIDATE_OR_GOTO ("store", shandle, out);
+        GF_VALIDATE_OR_GOTO ("store", shandle->path, out);
 
         snprintf (tmppath, sizeof (tmppath), "%s.tmp", shandle->path);
         fd = open (tmppath, O_RDWR | O_CREAT | O_TRUNC | O_SYNC, 0600);
@@ -71,7 +71,7 @@ gf_store_mkstemp (gf_store_handle_t *shandle)
                 gf_log ("", GF_LOG_ERROR, "Failed to open %s, error: %s",
                         tmppath, strerror (errno));
         }
-
+out:
         return fd;
 }
 
@@ -127,8 +127,8 @@ gf_store_rename_tmppath (gf_store_handle_t *shandle)
         int32_t         ret = -1;
         char            tmppath[PATH_MAX] = {0,};
 
-        GF_ASSERT (shandle);
-        GF_ASSERT (shandle->path);
+        GF_VALIDATE_OR_GOTO ("store", shandle, out);
+        GF_VALIDATE_OR_GOTO ("store", shandle->path, out);
 
         snprintf (tmppath, sizeof (tmppath), "%s.tmp", shandle->path);
         ret = rename (tmppath, shandle->path);
@@ -149,8 +149,8 @@ gf_store_unlink_tmppath (gf_store_handle_t *shandle)
         int32_t         ret = -1;
         char            tmppath[PATH_MAX] = {0,};
 
-        GF_ASSERT (shandle);
-        GF_ASSERT (shandle->path);
+        GF_VALIDATE_OR_GOTO ("store", shandle, out);
+        GF_VALIDATE_OR_GOTO ("store", shandle->path, out);
 
         snprintf (tmppath, sizeof (tmppath), "%s.tmp", shandle->path);
         ret = unlink (tmppath);
@@ -160,7 +160,7 @@ gf_store_unlink_tmppath (gf_store_handle_t *shandle)
         } else {
                 ret = 0;
         }
-
+out:
         return ret;
 }
 
@@ -168,10 +168,12 @@ int
 gf_store_read_and_tokenize (FILE *file, char *str, char **iter_key,
                             char **iter_val, gf_store_op_errno_t *store_errno)
 {
-        int32_t     ret = -1;
-        char        *savetok = NULL;
-        char        *key = NULL;
-        char        *value = NULL;
+        int32_t     ret         =   -1;
+        char        *savetok    = NULL;
+        char        *key        = NULL;
+        char        *value      = NULL;
+        char        *temp       = NULL;
+        size_t       str_len    =    0;
 
         GF_ASSERT (file);
         GF_ASSERT (str);
@@ -179,12 +181,16 @@ gf_store_read_and_tokenize (FILE *file, char *str, char **iter_key,
         GF_ASSERT (iter_val);
         GF_ASSERT (store_errno);
 
-        ret = fscanf (file, "%s", str);
-        if (ret <= 0 || feof (file)) {
+        temp = fgets (str, PATH_MAX, file);
+        if (temp == NULL || feof (file)) {
                 ret = -1;
                 *store_errno = GD_STORE_EOF;
                 goto out;
         }
+
+        str_len = strlen(str);
+        str[str_len - 1] = '\0';
+        /* Truncate the "\n", as fgets stores "\n" in str */
 
         key = strtok_r (str, "=", &savetok);
         if (!key) {
@@ -253,8 +259,13 @@ gf_store_retrieve_value (gf_store_handle_t *handle, char *key, char **value)
                 goto out;
         }
 
-        scan_str = GF_CALLOC (1, st.st_size,
+        /* "st.st_size + 1" is used as we are fetching each
+         * line of a file using fgets, fgets will append "\0"
+         * to the end of the string
+         */
+        scan_str = GF_CALLOC (1, st.st_size + 1,
                               gf_common_mt_char);
+
         if (scan_str == NULL) {
                 ret = -1;
                 store_errno = GD_STORE_ENOMEM;
@@ -362,12 +373,11 @@ gf_store_handle_new (char *path, gf_store_handle_t **handle)
                 goto out;
 
         spath = gf_strdup (path);
-
         if (!spath)
                 goto out;
 
         fd = open (path, O_RDWR | O_CREAT | O_APPEND, 0600);
-        if (fd <= 0) {
+        if (fd < 0) {
                 gf_log ("", GF_LOG_ERROR, "Failed to open file: %s, error: %s",
                         path, strerror (errno));
                 goto out;
@@ -383,7 +393,7 @@ gf_store_handle_new (char *path, gf_store_handle_t **handle)
 
         ret = 0;
 out:
-        if (fd > 0)
+        if (fd >= 0)
                 close (fd);
 
         if (ret == -1) {
@@ -532,7 +542,11 @@ gf_store_iter_get_next (gf_store_iter_t *iter, char  **key, char **value,
                 goto out;
         }
 
-        scan_str = GF_CALLOC (1, st.st_size,
+        /* "st.st_size + 1" is used as we are fetching each
+         * line of a file using fgets, fgets will append "\0"
+         * to the end of the string
+         */
+        scan_str = GF_CALLOC (1, st.st_size + 1,
                               gf_common_mt_char);
         if (!scan_str) {
                 ret = -1;
@@ -596,7 +610,9 @@ gf_store_iter_get_matching (gf_store_iter_t *iter, char *key, char **value)
                         goto out;
                 }
                 GF_FREE (tmp_key);
+                tmp_key = NULL;
                 GF_FREE (tmp_value);
+                tmp_value = NULL;
                 ret = gf_store_iter_get_next (iter, &tmp_key, &tmp_value,
                                               NULL);
         }

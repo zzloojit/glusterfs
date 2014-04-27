@@ -101,6 +101,7 @@ qr_inode_ctx_get_or_new (xlator_t *this, inode_t *inode)
 		if (ret) {
 			__qr_inode_prune (&priv->table, qr_inode);
 			GF_FREE (qr_inode);
+                        qr_inode = NULL;
 		}
 	}
 unlock:
@@ -417,10 +418,11 @@ qr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	if (content) {
 		/* new content came along, always replace old content */
 		qr_inode = qr_inode_ctx_get_or_new (this, inode);
-		if (!qr_inode)
+		if (!qr_inode) {
 			/* no harm done */
+			GF_FREE (content);
 			goto out;
-
+		}
 		qr_content_update (this, qr_inode, content, buf);
 	} else {
 		/* purge old content if necessary */
@@ -565,7 +567,6 @@ qr_readv_cached (call_frame_t *frame, qr_inode_t *qr_inode, size_t size,
 		iobref = iobref_new ();
 		if (!iobref) {
 			op_ret = -1;
-			iobuf_unref (iobuf);
 			goto unlock;
 		}
 
@@ -853,7 +854,7 @@ reconfigure (xlator_t *this, dict_t *options)
         GF_OPTION_RECONF ("cache-timeout", conf->cache_timeout, options, int32,
                           out);
 
-        GF_OPTION_RECONF ("cache-size", cache_size_new, options, size, out);
+        GF_OPTION_RECONF ("cache-size", cache_size_new, options, size_uint64, out);
         if (!check_cache_size_ok (this, cache_size_new)) {
                 ret = -1;
                 gf_log (this->name, GF_LOG_ERROR,
@@ -994,11 +995,11 @@ init (xlator_t *this)
         LOCK_INIT (&priv->table.lock);
         conf = &priv->conf;
 
-        GF_OPTION_INIT ("max-file-size", conf->max_file_size, size, out);
+        GF_OPTION_INIT ("max-file-size", conf->max_file_size, size_uint64, out);
 
         GF_OPTION_INIT ("cache-timeout", conf->cache_timeout, int32, out);
 
-        GF_OPTION_INIT ("cache-size", conf->cache_size, size, out);
+        GF_OPTION_INIT ("cache-size", conf->cache_size, size_uint64, out);
         if (!check_cache_size_ok (this, conf->cache_size)) {
                 ret = -1;
                 goto out;
